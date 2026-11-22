@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14,6 +14,9 @@
   #rand { position: fixed; visibility: hidden; pointer-events: none; padding: var(--sa-t) var(--sa-r) var(--sa-b) var(--sa-l); }
   html, body { margin: 0; height: 100%; background: #05070f; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   body { font: 600 13px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color: #8c96b8; }
+  /* touch-action vererbt sich nicht: jedes Teil einzeln, sonst zoomt Doppeltippen auf dem iPhone */
+  canvas, .tasten, .tasten *, #laden { touch-action: none; }
+  #leiste, #leiste button { touch-action: manipulation; }
   canvas { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
   #leiste { position: absolute; top: max(8px, var(--sa-t)); right: max(8px, var(--sa-r)); display: flex; gap: 6px; z-index: 3; }
   #leiste button { font: inherit; color: #f2f4fa; background: #141b33cc; border: 1px solid #2e3b66; border-radius: 8px; padding: 6px 10px; }
@@ -32,6 +35,7 @@
   .getauscht #k-ok { right: auto; left: 0; } .getauscht #k-zurueck { right: auto; left: 80px; }
   .remaster #leiste { display: none; }
   .remaster:not(.spielt) .tasten { display: none; }
+  #messen { position: fixed; left: max(6px, var(--sa-l)); top: max(4px, var(--sa-t)); z-index: 5; font: 600 11px/1.3 ui-monospace, monospace; color: #62d67a; background: #05070fd0; padding: 2px 5px; border-radius: 4px; pointer-events: none; white-space: pre; }
   #laden { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #f5c542; font-size: 18px; }
 </style>
 </head>
@@ -647,7 +651,12 @@ var BRRetro = (function () {
   const gross = (s) => s.replace(/ß/g, "SS").toUpperCase();
   const breite = (s, g = 1) => Math.max(0, gross(s).length * 6 * g - g);
 
+  // Zeichnen abschalten (Thomas, 22.11.2026: auf dem Samsung A14 ruckelte das Remaster): Holt die Seite verpasste Bilder
+  // nach, rechnet sie diese ohne Zeichnen und malt nur das letzte. Alle Zustände (Zähler, Zufall, Effekte) laufen weiter.
+  let malt = true;
+  const malen = (an) => { malt = an; };
   function rechteck(z, x, y, b, h, c) {
+    if (!malt) return;
     const x0 = Math.max(x, 0), y0 = Math.max(y, 0), x1 = Math.min(x + b, z.Breite), y1 = Math.min(y + h, z.Hoehe);
     if (x1 <= x0) return;
     for (let yy = y0; yy < y1; yy++) z.Pixel.fill(c, yy * z.Breite + x0, yy * z.Breite + x1);
@@ -659,6 +668,7 @@ var BRRetro = (function () {
     return (0xFF000000 | (r << 16) | (g << 8) | b) >>> 0;
   }
   function schleier(z, x, y, b, h, c, a) {
+    if (!malt) return;
     for (let yy = Math.max(y, 0); yy < Math.min(y + h, z.Hoehe); yy++)
       for (let xx = Math.max(x, 0); xx < Math.min(x + b, z.Breite); xx++) z.Pixel[yy * z.Breite + xx] = mischen(z.Pixel[yy * z.Breite + xx], c, a);
   }
@@ -678,16 +688,29 @@ var BRRetro = (function () {
     rechteck(z, x + 2, y + 1, b - 4, h - 2, f); rechteck(z, x + 1, y + 2, b - 2, h - 4, f);
   }
   function bild(z, q, sx, sy, sb, sh, dx, dy, g = 1) {
+    if (!malt) return;
     for (let yy = 0; yy < sh; yy++) for (let xx = 0; xx < sb; xx++) {
       const p = q.Pixel[(sy + yy) * q.Breite + sx + xx];
       if (p >>> 24 < 128) continue;
       rechteck(z, dx + xx * g, dy + yy * g, g, g, (p | 0xFF000000) >>> 0);
     }
   }
-  function kopieren(z, q, dx, dy) { for (let yy = 0; yy < q.Hoehe; yy++) z.Pixel.set(q.Pixel.subarray(yy * q.Breite, yy * q.Breite + q.Breite), (dy + yy) * z.Breite + dx); }
+  function kopieren(z, q, dx, dy) { if (malt) for (let yy = 0; yy < q.Hoehe; yy++) z.Pixel.set(q.Pixel.subarray(yy * q.Breite, yy * q.Breite + q.Breite), (dy + yy) * z.Breite + dx); }
+  // Laufender Hintergrund: die abgedunkelte Kachel einmal vorrechnen (je Kachelzeile ein Streifen, 32 Pixel breiter als
+  // die Bühne), danach je Bildzeile nur noch kopieren. Gleiches Bild wie Pixel für Pixel gemischt.
+  let hgBild = null, hgBreite = 0, hgSicht = null;
   function hintergrund(z, k, zeit) {
+    if (!malt) return;
+    const B = z.Breite, L = B + 32;
+    if (hgBild !== k || hgBreite !== B) {
+      const streifen = new Uint32Array(32 * L);
+      for (let qy = 0; qy < 32; qy++) for (let x = 0; x < L; x++) streifen[qy * L + x] = mischen((k.Pixel[qy * k.Breite + x % 32] | 0xFF000000) >>> 0, F.Nacht, 185);
+      hgSicht = [];
+      for (let qy = 0; qy < 32; qy++) for (let ox = 0; ox < 32; ox++) hgSicht.push(streifen.subarray(qy * L + ox, qy * L + ox + B));
+      hgBild = k; hgBreite = B;
+    }
     const ox = div(zeit, 2) % 32, oy = div(zeit, 3) % 32;
-    for (let y = 0; y < z.Hoehe; y++) { const qy = (y + oy) % 32; for (let x = 0; x < z.Breite; x++) z.Pixel[y * z.Breite + x] = mischen((k.Pixel[qy * k.Breite + (x + ox) % 32] | 0xFF000000) >>> 0, F.Nacht, 185); }
+    for (let y = 0; y < z.Hoehe; y++) z.Pixel.set(hgSicht[((y + oy) % 32) * 32 + ox], y * B);
   }
 
   // ------------------------------------------------------------------ Eingabe und Menü
@@ -714,7 +737,7 @@ var BRRetro = (function () {
   // Licht dazuaddieren
   function leuchten(z, x, y, c, a) {
     x |= 0; y |= 0; a |= 0;
-    if (a <= 0 || x < Math.max(0, klip.x0) || y < Math.max(0, klip.y0) || x >= Math.min(z.Breite, klip.x1) || y >= Math.min(z.Hoehe, klip.y1)) return;
+    if (!malt || a <= 0 || x < Math.max(0, klip.x0) || y < Math.max(0, klip.y0) || x >= Math.min(z.Breite, klip.x1) || y >= Math.min(z.Hoehe, klip.y1)) return;
     const i = y * z.Breite + x, d = z.Pixel[i];
     const r = Math.min(255, ((d >>> 16) & 255) + div(((c >>> 16) & 255) * a, 255));
     const g = Math.min(255, ((d >>> 8) & 255) + div(((c >>> 8) & 255) * a, 255));
@@ -724,7 +747,7 @@ var BRRetro = (function () {
   // Ausschnitt eines Bildes um die Mitte (mx, my) mit Maßstab skx/sky, echter Halbtransparenz, weiß überblendet und mit Deckung
   function skaliert(z, q, sx, sy, sb, sh, mx, my, skx = 1, sky = 1, weiss = 0, deck = 255) {
     const hb = sb * skx / 2, hh = sh * sky / 2;
-    if (hb < 0.5 || hh < 0.5 || deck <= 0) return;
+    if (!malt || hb < 0.5 || hh < 0.5 || deck <= 0) return;
     const lx = mx - hb, oy = my - hh;
     const x0 = Math.max(0, klip.x0, Math.floor(lx)), x1 = Math.min(z.Breite, klip.x1, Math.ceil(mx + hb));
     const y0 = Math.max(0, klip.y0, Math.floor(oy)), y1 = Math.min(z.Hoehe, klip.y1, Math.ceil(my + hh));
@@ -822,7 +845,7 @@ var BRRetro = (function () {
   }
   return {
     F, text, mitte, rechts, breite, gross, tafel, bild, kopieren, hintergrund, schleier, rechteck, mischen, Eingabe,
-    klip, klippen, klippenAus, leuchten, skaliert, glatt, leuchtfarbe, Zufall, Effekte,
+    klip, klippen, klippenAus, leuchten, skaliert, glatt, leuchtfarbe, Zufall, Effekte, malen, get malt() { return malt; },
   };
 })();
 if (typeof module !== "undefined") module.exports = BRRetro;
@@ -844,6 +867,7 @@ var BRFeldbild = (function () {
   const imLevel = (cx, cy) => cx >= 0 && cy >= 0 && cx < Level.tiles_w && cy < Level.tiles_h;
 
   function blit(z, q, sx, sy, sb, sh, dx, dy) {
+    if (!BRRetro.malt) return;
     const x0 = Math.max(dx, klip.x0, 0), y0 = Math.max(dy, klip.y0, 0), x1 = Math.min(dx + sb, klip.x1, z.Breite), y1 = Math.min(dy + sh, klip.y1, z.Hoehe);
     for (let y = y0; y < y1; y++) {
       const qz = (sy + y - dy) * q.Breite + sx - dx, zz = y * z.Breite;
@@ -853,7 +877,31 @@ var BRFeldbild = (function () {
       }
     }
   }
+  // Kachel nr aus dem Kachelbild q. Deckt sie ganz (keine durchsichtigen Pixel, einmal je Kachel geprüft), wird sie ohne
+  // Prüfung je Pixel kopiert; sonst wie blit. Gleiches Bild, der Boden ist nur schneller gemalt.
+  const kachelDeckt = new Map();
+  function deckt(q, nr) {
+    let v = kachelDeckt.get(q);
+    if (!v) { v = new Uint8Array(Math.max(1, div(q.Breite, R))).fill(2); kachelDeckt.set(q, v); }
+    if (v[nr] === 2) {
+      let ok = 1;
+      for (let y = 0; y < R && ok; y++) for (let x = 0; x < R; x++) if (q.Pixel[y * q.Breite + nr * R + x] >>> 24 !== 255) { ok = 0; break; }
+      v[nr] = ok;
+    }
+    return v[nr] === 1;
+  }
+  function kachel(z, q, nr, dx, dy) {
+    if (!deckt(q, nr)) { blit(z, q, nr * R, 0, R, R, dx, dy); return; }
+    if (!BRRetro.malt) return;
+    const x0 = Math.max(dx, klip.x0, 0), y0 = Math.max(dy, klip.y0, 0), x1 = Math.min(dx + R, klip.x1, z.Breite), y1 = Math.min(dy + R, klip.y1, z.Hoehe);
+    const zp = z.Pixel, qp = q.Pixel;
+    for (let y = y0; y < y1; y++) {
+      const qz = (y - dy) * q.Breite + nr * R - dx, zz = y * z.Breite;
+      for (let x = x0; x < x1; x++) zp[zz + x] = qp[qz + x];
+    }
+  }
   function schatten(z, cx, cy, rx, ry, a) {
+    if (!BRRetro.malt) return;
     const x0 = Math.max((cx - rx | 0) - 1, klip.x0, 0), x1 = Math.min((cx + rx | 0) + 2, klip.x1, z.Breite);
     const y0 = Math.max((cy - ry | 0) - 1, klip.y0, 0), y1 = Math.min((cy + ry | 0) + 2, klip.y1, z.Hoehe);
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
@@ -1072,15 +1120,15 @@ var BRFeldbild = (function () {
       const c0 = fl(this.kx, R), c1 = fl(this.kx + B - 1, R), r0 = fl(this.ky, R), r1 = fl(this.ky + H - 1, R);
       for (let cy = r0; cy <= r1; cy++) for (let cx = c0; cx <= c1; cx++) {
         const x = fx + cx * R - this.kx, y = fy + cy * R - this.ky;
-        blit(z, k, 0, 0, R, R, x, y);
-        if (!imLevel(cx, cy)) continue;
-        const t = Level.levelMap[cy][cx];
+        const t = imLevel(cx, cy) ? Level.levelMap[cy][cx] : Level.EMPTY;
+        // liegt eine ganz deckende Kachel darüber (Wand), braucht es den Boden darunter nicht
+        if (t === Level.EMPTY || t === Level.BONUS_ITEM || !deckt(k, t)) kachel(z, k, 0, x, y);
         if (t === Level.EMPTY) continue;
         if (t === Level.BONUS_ITEM) {
           schein(z, x + R / 2, y + R / 2, this.glanzBonus, 34 + ((18 * Math.sin(this.uhr * 0.1 + cx + cy)) | 0), 13);
           blit(z, Tb.img[Tb.bonusPNG], bonusBild * R, 0, R, R, x, y);
         } else {
-          blit(z, k, t * R, 0, R, R, x, y);
+          kachel(z, k, t, x, y);
           if (t === Level.GOAL) schein(z, x + R / 2, y + R / 2, this.glanzZiel, 46 + ((30 * Math.sin(this.uhr * 0.08 + cx * 0.7)) | 0), 17);
         }
       }
@@ -1135,7 +1183,7 @@ var BRFeldbild = (function () {
     }
     // Levelbeginn: Blende öffnet sich um die Figur, „Level n“ blendet auf und wieder aus
     blende(z, fx, fy) {
-      if (this.start < IRIS) {
+      if (this.start < IRIS && BRRetro.malt) {
         const r = this.iris(), cx = fx + B / 2, cy = fy + H / 2;
         for (let y = Math.max(fy, 0); y < Math.min(fy + H, z.Hoehe); y++) for (let x = Math.max(fx, 0); x < Math.min(fx + B, z.Breite); x++) {
           const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2) - r;
@@ -1503,6 +1551,25 @@ addEventListener("keyup", (e) => {
   if (HANDY[e.code] !== undefined) handy.delete(HANDY[e.code]);
 });
 addEventListener("blur", () => { gehalten.clear(); handy.clear(); });
+
+// Kein Zoomen (Thomas, 22.11.2026: Doppeltippen zoomte auf dem iPhone hinein, Stick und Knöpfe waren weg, heraus ging
+// es nicht mehr). iOS überhört user-scalable=no. Deshalb fängt die Seite die Touch-Ereignisse selbst ab: Hier gibt es
+// nichts zu schieben oder zu zoomen; Stick, Knöpfe und Antippen laufen über Pointer-Ereignisse und kommen weiter an.
+// Nur die zwei Knöpfe der Leiste (Klassisch) brauchen ihren Klick und bleiben ausgenommen.
+const keinZoom = (e) => { if (e.cancelable && !(e.target && e.target.closest && e.target.closest("#leiste"))) e.preventDefault(); };
+for (const n of ["touchstart", "touchmove", "touchend"]) addEventListener(n, keinZoom, { passive: false });
+for (const n of ["gesturestart", "gesturechange", "gestureend", "dblclick"]) addEventListener(n, (e) => e.preventDefault(), { passive: false });
+// Ist doch hineingezoomt (Bedienungshilfen, alte Seite im Zwischenspeicher): die Ansicht zurücksetzen, höchstens einmal je Sekunde
+if (typeof visualViewport !== "undefined" && document.querySelector) {
+  let zuletzt = 0;
+  visualViewport.addEventListener("resize", () => {
+    if (visualViewport.scale <= 1.01 || performance.now() - zuletzt < 1000) return;
+    zuletzt = performance.now();
+    const m = document.querySelector('meta[name="viewport"]'), c = m.content;
+    m.content = "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover";
+    requestAnimationFrame(() => { m.content = c; });
+  });
+}
 for (const k of document.querySelectorAll(".t")) {
   const t = k.dataset.t;
   const an = (e) => { e.preventDefault(); k.setPointerCapture?.(e.pointerId); k.classList.add("an"); gehalten.add(t); tipp.add(t); if (t === "zurueck") { gehalten.add("pause"); tipp.add("pause"); } };
@@ -1601,7 +1668,7 @@ function zeigen(px, W, H) {
     BR.Tb.w = 240; BR.Tb.h = 320;
     const schirm = BR.Image.createImage(240, 320), CODE = { hoch: -1, runter: -2, links: -3, rechts: -4, ok: -5, zurueck: 51 };
     let vorher = new Set();
-    schritt = () => {
+    schritt = (letzter) => {
       const jetzt = new Set([...handy, ...handyTipp]);
       for (const t of [...gehalten, ...tipp]) if (CODE[t] !== undefined) jetzt.add(CODE[t]);
       tipp.clear(); handyTipp.clear();
@@ -1610,14 +1677,17 @@ function zeigen(px, W, H) {
       vorher = jetzt;
       try { BR.Ac.paint(schirm.getGraphics()); } catch (e) { }
       if (BR.Ac.beendet) { BR.Ac.beendet = false; location.hash = ""; location.reload(); }   // „Verlassen“: zurück ins Remaster
-      zeigen(schirm.Pixel, 240, 320);
+      if (letzter) zeigen(schirm.Pixel, 240, 320);
     };
   } else {
     BR.Ac.remaster = true;
     document.body.classList.add("remaster");
     const r = remaster = new BRHandy({ klassisch: () => { location.hash = "#klassisch"; location.reload(); }, seite: () => seite, seiteSetzen });
-    schritt = () => {
+    // Holt der Takt Bilder nach, werden sie nur gerechnet; gemalt und gezeigt wird das letzte
+    schritt = (letzter) => {
+      BRRetro.malen(letzter);
       r.schritt(new Set([...gehalten, ...tipp]), tippsNeu, halten); tipp.clear(); tippsNeu = [];
+      if (!letzter) return;
       document.body.classList.toggle("spielt", r.schirm === "Spiel");
       zeigen(r.buehne.Pixel, r.B, r.H);
     };
@@ -1626,11 +1696,26 @@ function zeigen(px, W, H) {
   // Klassisch 25 Bilder/s wie das Handyspiel, das Remaster 60 Bilder/s (die Logik darin weiter 25 Schritte/s), auch wenn
   // der Bildschirm schneller ist; 1 ms Spielraum, damit ein 60-Hz-Bildschirm nicht wegen Zeitschwankungen ein Bild auslässt
   const MS = klassisch ? 40 : 1000 / 60;
+  // Messanzeige (Adresse mit ?messen): Bildschirmtakt, gerechnete und gezeigte Bilder je Sekunde, Rechenzeit je Takt
+  const messen = /[?&]messen\b/.test(location.search) ? document.body.appendChild(Object.assign(document.createElement("div"), { id: "messen" })) : null;
+  let mTakte = 0, mSchritte = 0, mGezeigt = 0, mMs = 0, mMax = 0, mSeit = performance.now();
   let zeit = performance.now();
   (function takt(jetzt) {
     let n = 0;
-    while (jetzt - zeit >= MS - 1 && n < 5) { schritt(); zeit += MS; n++; }
+    while (jetzt - zeit >= MS - 1 && n < 5) { zeit += MS; n++; }
     if (jetzt - zeit > 200) zeit = jetzt;
+    const t0 = messen ? performance.now() : 0;
+    for (let i = 0; i < n; i++) schritt(i === n - 1);
+    if (messen) {
+      const d = performance.now() - t0;
+      mTakte++; mSchritte += n; if (n) { mGezeigt++; mMs += d; mMax = Math.max(mMax, d); }
+      if (jetzt - mSeit >= 1000) {
+        const s = (jetzt - mSeit) / 1000;
+        messen.textContent = Math.round(mTakte / s) + " Hz  " + Math.round(mGezeigt / s) + " gezeigt  " + Math.round(mSchritte / s) + " gerechnet\n"
+          + (mGezeigt ? (mMs / mGezeigt).toFixed(1) : "0") + " ms  max " + mMax.toFixed(0) + " ms  " + leinwand.width + "x" + leinwand.height;
+        mTakte = mSchritte = mGezeigt = mMs = mMax = 0; mSeit = jetzt;
+      }
+    }
     requestAnimationFrame(takt);
   })(zeit);
 })();
