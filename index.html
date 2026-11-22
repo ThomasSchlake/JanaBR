@@ -1,0 +1,1639 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b1020">
+<title>Babys retten – für Jana</title>
+<style>
+  /* sichere Ränder (Notch, Dynamic Island, Home-Leiste); zum Prüfen per style.setProperty überschreibbar */
+  :root { --sa-t: env(safe-area-inset-top, 0px); --sa-r: env(safe-area-inset-right, 0px); --sa-b: env(safe-area-inset-bottom, 0px); --sa-l: env(safe-area-inset-left, 0px); }
+  #rand { position: fixed; visibility: hidden; pointer-events: none; padding: var(--sa-t) var(--sa-r) var(--sa-b) var(--sa-l); }
+  html, body { margin: 0; height: 100%; background: #05070f; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  body { font: 600 13px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color: #8c96b8; }
+  canvas { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #leiste { position: absolute; top: max(8px, var(--sa-t)); right: max(8px, var(--sa-r)); display: flex; gap: 6px; z-index: 3; }
+  #leiste button { font: inherit; color: #f2f4fa; background: #141b33cc; border: 1px solid #2e3b66; border-radius: 8px; padding: 6px 10px; }
+  .tasten { position: absolute; bottom: max(14px, var(--sa-b)); z-index: 2; }
+  #stick { left: max(14px, var(--sa-l)); width: 150px; height: 150px; border-radius: 50%; box-sizing: border-box; background: #141b3380; border: 2px solid #2e3b66; }
+  #knauf { position: absolute; left: 42px; top: 42px; width: 62px; height: 62px; border-radius: 50%; box-sizing: border-box; background: #2e3b66; border: 2px solid #8c96b8; pointer-events: none; }
+  #stick.an #knauf { background: #f5c542; border-color: #f5c542; }
+  #knoepfe { right: max(14px, var(--sa-r)); width: 150px; height: 156px; }
+  .t { position: absolute; display: flex; align-items: center; justify-content: center; background: #141b33b0; border: 2px solid #2e3b66; color: #f2f4fa; font-size: 20px; }
+  .t.an { background: #f5c542d0; color: #0b1020; border-color: #f5c542; }
+  #knoepfe .t { width: 68px; height: 68px; border-radius: 50%; font-size: 22px; }
+  #k-ok { right: 0; top: 18px; } #k-zurueck { right: 80px; top: 74px; width: 56px !important; height: 56px !important; font-size: 16px !important; }
+  /* Seiten getauscht (Optionen „Stick: Rechts“ bzw. Knopf ⇄ in Klassisch): Stick rechts, Knöpfe gespiegelt links */
+  .getauscht #stick { left: auto; right: max(14px, var(--sa-r)); }
+  .getauscht #knoepfe { right: auto; left: max(14px, var(--sa-l)); }
+  .getauscht #k-ok { right: auto; left: 0; } .getauscht #k-zurueck { right: auto; left: 80px; }
+  .remaster #leiste { display: none; }
+  .remaster:not(.spielt) .tasten { display: none; }
+  #laden { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #f5c542; font-size: 18px; }
+</style>
+</head>
+<body>
+<div id="rand"></div>
+<div id="laden">Lädt …</div>
+<canvas id="bild"></canvas>
+<div id="leiste"><button id="seiten" type="button">⇄</button><button id="art" type="button">Remaster</button></div>
+<div class="tasten" id="stick"><div id="knauf"></div></div>
+<div class="tasten" id="knoepfe">
+  <div class="t" id="k-ok" data-t="ok">OK</div><div class="t" id="k-zurueck" data-t="zurueck">✕</div>
+</div>
+<script>// Babys retten im Browser: dieselbe Übertragung wie ..\classic (C#), hier in JavaScript, für Handy und PC.
+// Java-Rechenregeln: Ganzzahl-Division div(), Java-byte sb() (läuft über), >>> wie in Java, java.util.Random mit BigInt.
+// Geprüft wie die C#-Fassung: pruefen.js lässt diesen Code ohne Browser gegen referenz\ (Java-Original) laufen.
+"use strict";
+var BR = (function () {
+  const div = (a, b) => (a / b) | 0;
+  const sb = (x) => (x << 24) >> 24;
+
+  // ------------------------------------------------------------------ PNG lesen (8 Bit, ohne Zeilensprung)
+  async function pngLesen(d, inflate) {
+    let i = 8, b = 0, h = 0, tiefe = 0, typ = 0, il = 0, palette = null, trns = null;
+    const teile = [];
+    const u32 = (p) => ((d[p] << 24) | (d[p + 1] << 16) | (d[p + 2] << 8) | d[p + 3]) >>> 0;
+    while (i < d.length) {
+      const n = u32(i), t = String.fromCharCode(d[i + 4], d[i + 5], d[i + 6], d[i + 7]), p = i + 8;
+      if (t === "IHDR") { b = u32(p); h = u32(p + 4); tiefe = d[p + 8]; typ = d[p + 9]; il = d[p + 12]; }
+      else if (t === "PLTE") { palette = []; for (let k = 0; k < n / 3; k++) palette.push(((d[p + 3 * k] << 16) | (d[p + 3 * k + 1] << 8) | d[p + 3 * k + 2]) >>> 0); }
+      else if (t === "tRNS") trns = d.slice(p, p + n);
+      else if (t === "IDAT") teile.push(d.slice(p, p + n));
+      else if (t === "IEND") break;
+      i += 12 + n;
+    }
+    if (tiefe !== 8 || il !== 0) throw new Error("PNG nicht unterstützt");
+    const kan = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[typ];
+    let len = 0; for (const t of teile) len += t.length;
+    const z = new Uint8Array(len); let o = 0; for (const t of teile) { z.set(t, o); o += t.length; }
+    const roh = await inflate(z);
+    const zeile = b * kan, bild = new Uint8Array(zeile * h);
+    for (let y = 0; y < h; y++) {
+      const f = roh[y * (zeile + 1)], q = y * (zeile + 1) + 1, ob = y * zeile;
+      for (let x = 0; x < zeile; x++) {
+        const a = x >= kan ? bild[ob + x - kan] : 0, c = y > 0 ? bild[ob - zeile + x] : 0, ac = y > 0 && x >= kan ? bild[ob - zeile + x - kan] : 0;
+        let v = roh[q + x];
+        if (f === 1) v += a; else if (f === 2) v += c; else if (f === 3) v += (a + c) >> 1;
+        else if (f === 4) { const pp = a + c - ac, pa = Math.abs(pp - a), pb = Math.abs(pp - c), pc = Math.abs(pp - ac); v += pa <= pb && pa <= pc ? a : pb <= pc ? c : ac; }
+        bild[ob + x] = v & 255;
+      }
+    }
+    const px = new Uint32Array(b * h);
+    for (let k = 0; k < px.length; k++) {
+      const q = k * kan;
+      if (typ === 0) px[k] = (0xFF000000 | (bild[q] * 0x010101)) >>> 0;
+      else if (typ === 2) px[k] = (0xFF000000 | (bild[q] << 16) | (bild[q + 1] << 8) | bild[q + 2]) >>> 0;
+      else if (typ === 3) { const ix = bild[q]; px[k] = ((palette[ix] & 0xFFFFFF) | ((trns && ix < trns.length ? trns[ix] : 255) << 24)) >>> 0; }
+      else if (typ === 4) px[k] = ((bild[q + 1] << 24) | (bild[q] * 0x010101)) >>> 0;
+      else px[k] = ((bild[q + 3] << 24) | (bild[q] << 16) | (bild[q + 1] << 8) | bild[q + 2]) >>> 0;
+    }
+    return { b, h, px };
+  }
+
+  // ------------------------------------------------------------------ MIDP-Nachbau (wie Gemeinsam\Midp.cs)
+  const Anker = { HCENTER: 1, VCENTER: 2, LEFT: 4, RIGHT: 8, TOP: 16, BOTTOM: 32, BASELINE: 64 };
+  const bilder = {}, texte = {};
+
+  class Image {
+    constructor(b, h, px) { this.Breite = b; this.Hoehe = h; this.Pixel = px; }
+    getWidth() { return this.Breite; }
+    getHeight() { return this.Hoehe; }
+    static createImage(a, h) {
+      if (typeof a === "string") { const q = bilder[a.replace(/^\//, "")]; return new Image(q.b, q.h, q.px); }
+      const p = new Uint32Array(a * h); p.fill(0xFFFFFFFF); return new Image(a, h, p);
+    }
+    getGraphics() { return new Graphics(this); }
+  }
+
+  class Font {
+    constructor(name) {
+      const q = bilder[name + ".png"];
+      this.deckung = new Uint8Array(q.px.length);
+      for (let i = 0; i < q.px.length; i++) this.deckung[i] = (q.px[i] >>> 16) & 255;
+      const z = texte[name + ".txt"].trim().split(/\r?\n/), kopf = z[0].split(" ");
+      this.hoehe = +kopf[1]; this.grundlinie = +kopf[3];
+      this.breite = new Int32Array(256);
+      for (let k = 1; k < z.length; k++) { const w = z[k].split(" "); this.breite[+w[0]] = +w[1]; }
+    }
+    static getFont(face, style, size) { return Font.laden("schrift-" + face + "-" + style + "-" + size); }
+    static getDefaultFont() { return Font.laden("standard"); }
+    static laden(n) { return (Font.cache[n] ||= new Font(n)); }
+    getHeight() { return this.hoehe; }
+    getBaselinePosition() { return this.grundlinie; }
+    static zeichen(c) { const k = c.charCodeAt(0); return k < 256 ? k : 63; }
+    stringWidth(s) { let w = 0; for (const c of s) w += this.breite[Font.zeichen(c)]; return w; }
+    zeichnen(g, c, x, y, farbe) {
+      const z = Font.zeichen(c), zx = (z % 16) * 32, zy = div(z, 16) * 32;
+      for (let yy = 0; yy < 32; yy++) {
+        const zeile = (zy + yy) * 512 + zx;
+        for (let xx = 0; xx < 32; xx++) { const d = this.deckung[zeile + xx]; if (d) g.mischen(x + xx - 4, y + yy - 4, farbe, d); }
+      }
+      return this.breite[z];
+    }
+  }
+  Font.cache = {};
+  Font.FACE_SYSTEM = 0; Font.STYLE_BOLD = 1; Font.SIZE_SMALL = 8;
+
+  const mul = (a, b) => div(a * b + 127, 255);
+
+  class Graphics {
+    constructor(ziel) { this.z = ziel; this.tx = 0; this.ty = 0; this.kx = 0; this.ky = 0; this.kb = ziel.Breite; this.kh = ziel.Hoehe; this.farbe = 0xFF000000; this.font = Font.getDefaultFont(); }
+    translate(x, y) { this.tx += x; this.ty += y; }
+    setClip(x, y, b, h) { this.kx = x + this.tx; this.ky = y + this.ty; this.kb = b; this.kh = h; }
+    setColor(r, g, b) { this.farbe = g === undefined ? (0xFF000000 | (r & 0xFFFFFF)) >>> 0 : (0xFF000000 | ((r & 255) << 16) | ((g & 255) << 8) | (b & 255)) >>> 0; }
+    setFont(f) { this.font = f || Font.getDefaultFont(); }
+    drin(x, y) { return x >= this.kx && y >= this.ky && x < this.kx + this.kb && y < this.ky + this.kh && x >= 0 && y >= 0 && x < this.z.Breite && y < this.z.Hoehe; }
+    mischen(x, y, c, d) {
+      if (!this.drin(x, y)) return;
+      const i = y * this.z.Breite + x;
+      if (d === 255) { this.z.Pixel[i] = c; return; }
+      const a = this.z.Pixel[i];
+      const r = mul((c >>> 16) & 255, d) + mul((a >>> 16) & 255, 255 - d), gg = mul((c >>> 8) & 255, d) + mul((a >>> 8) & 255, 255 - d), bb = mul(c & 255, d) + mul(a & 255, 255 - d);
+      this.z.Pixel[i] = (0xFF000000 | (r << 16) | (gg << 8) | bb) >>> 0;
+    }
+    fillRect(x, y, b, h) {
+      if (b <= 0 || h <= 0) return;
+      x += this.tx; y += this.ty;
+      const x0 = Math.max(x, this.kx, 0), y0 = Math.max(y, this.ky, 0), x1 = Math.min(x + b, this.kx + this.kb, this.z.Breite), y1 = Math.min(y + h, this.ky + this.kh, this.z.Hoehe);
+      for (let yy = y0; yy < y1; yy++) this.z.Pixel.fill(this.farbe, yy * this.z.Breite + x0, yy * this.z.Breite + Math.max(x0, x1));
+    }
+    drawRect(x, y, b, h) {
+      if (b < 0 || h < 0) return;
+      x += this.tx; y += this.ty;
+      const s = (xx, yy) => { if (this.drin(xx, yy)) this.z.Pixel[yy * this.z.Breite + xx] = this.farbe; };
+      for (let i = 0; i <= b; i++) { s(x + i, y); s(x + i, y + h); }
+      for (let i = 0; i <= h; i++) { s(x, y + i); s(x + b, y + i); }
+    }
+    drawImage(img, x, y, anker) {
+      if (!anker) anker = Anker.TOP | Anker.LEFT;
+      if (anker & Anker.HCENTER) x -= div(img.Breite, 2); else if (anker & Anker.RIGHT) x -= img.Breite;
+      if (anker & Anker.VCENTER) y -= div(img.Hoehe, 2); else if (anker & Anker.BOTTOM) y -= img.Hoehe;
+      x += this.tx; y += this.ty;
+      const Z = this.z;
+      const x0 = Math.max(x, this.kx, 0), y0 = Math.max(y, this.ky, 0), x1 = Math.min(x + img.Breite, this.kx + this.kb, Z.Breite), y1 = Math.min(y + img.Hoehe, this.ky + this.kh, Z.Hoehe);
+      for (let yy = y0; yy < y1; yy++) {
+        const q = (yy - y) * img.Breite - x, zz = yy * Z.Breite;
+        for (let xx = x0; xx < x1; xx++) {
+          const p = img.Pixel[q + xx], a = p >>> 24;
+          if (a === 255) Z.Pixel[zz + xx] = p; else if (a) this.mischen(xx, yy, (p | 0xFF000000) >>> 0, a);
+        }
+      }
+    }
+    drawString(s, x, y, anker) {
+      if (!anker) anker = Anker.TOP | Anker.LEFT;
+      const w = this.font.stringWidth(s);
+      if (anker & Anker.HCENTER) x -= div(w, 2); else if (anker & Anker.RIGHT) x -= w;
+      if (anker & Anker.BASELINE) y -= this.font.getBaselinePosition(); else if (anker & Anker.BOTTOM) y -= this.font.getHeight();
+      x += this.tx; y += this.ty;
+      for (const c of s) x += this.font.zeichnen(this, c, x, y, this.farbe);
+    }
+  }
+
+  class JavaRandom {
+    constructor(s) { this.seed = (BigInt(s) ^ 0x5DEECE66Dn) & 0xFFFFFFFFFFFFn; }
+    nextInt() { this.seed = (this.seed * 0x5DEECE66Dn + 0xBn) & 0xFFFFFFFFFFFFn; return Number(BigInt.asIntN(32, this.seed >> 16n)); }
+  }
+
+  const Speicher = {
+    werte: null, schluessel: "babys-retten-optionen",
+    alle() { if (!this.werte) { try { this.werte = JSON.parse(localStorage.getItem(this.schluessel) || "{}"); } catch (e) { this.werte = {}; } } return this.werte; },
+    da(n) { return n in this.alle(); },
+    lesen(n) { return this.alle()[n] | 0; },
+    schreiben(n, w) { this.alle()[n] = w; try { localStorage.setItem(this.schluessel, JSON.stringify(this.werte)); } catch (e) { } },
+  };
+
+  // ------------------------------------------------------------------ das Spiel (wie classic\Spiel.cs und Level.cs)
+  const Ac = {
+    beendet: false, jana: false, remaster: false, dankeZeit: 0, startwert: null,
+    up: false, down: false, left: false, right: false, fire: false, anyKey: false, lsk: false, rsk: false,
+    UP: 1, DOWN: 6, LEFT: 2, RIGHT: 5, FIRE: 8, KEY_NUM3: 51, KEYCODE_LSK: -6,
+    getGameAction(k) {
+      if (k === -1 || k === 50) return 1; if (k === -2 || k === 56) return 6; if (k === -3 || k === 52) return 2;
+      if (k === -4 || k === 54) return 5; if (k === -5 || k === 53) return 8; return 0;
+    },
+    keyPressed(k) {
+      Ac.anyKey = true;
+      if (k === Ac.KEYCODE_LSK) Ac.lsk = true;
+      switch (Ac.getGameAction(k)) { case 1: Ac.up = true; break; case 6: Ac.down = true; break; case 2: Ac.left = true; break; case 5: Ac.right = true; break; case 8: Ac.fire = true; break; }
+      if (k === Ac.KEY_NUM3) Game.GAMESTATE[0] = Game.MENU;
+    },
+    keyReleased(k) {
+      Ac.anyKey = false;
+      if (k === Ac.KEYCODE_LSK) Ac.lsk = false;
+      switch (Ac.getGameAction(k)) { case 1: Ac.up = false; break; case 6: Ac.down = false; break; case 2: Ac.left = false; break; case 5: Ac.right = false; break; case 8: Ac.fire = false; break; }
+    },
+    drawSK(l, r, g) {
+      g.setFont(Tb.font);
+      const y = Tb.h - Tb.font.getHeight(), w = Tb.font.stringWidth(r);
+      g.drawString(l, 5, y, Tb.anchor); g.drawString(r, Tb.w - 5 - w, y, Tb.anchor);
+    },
+    startPreloader: false,
+    paint(g) {
+      if (!Tb.preloaderReady) {
+        Tb.drawOutlineString("Bitte warten.", div(Tb.w, 2), div(Tb.h, 2), Tb.anchorM, Tb.font, g);
+        if (Ac.startPreloader) { Tb.preloader(); if (Ac.startwert !== null) Tb.random = new JavaRandom(Ac.startwert); }
+        Ac.startPreloader = true;
+      } else Game.drawGame(g);
+    },
+  };
+
+  const Tb = {
+    w: 240, h: 320, anchor: 20, anchorM: 17, random: null, font: null, fontH: 0, preloaderReady: false, img: null,
+    actorPNG: 0, absorberPNG: 1, scionPNG: 2, tilesPNG: 3, explosionPNG: 4, bonusPNG: 5, timer: 0,
+    preloader() {
+      Tb.font = Font.getFont(0, 1, 8); Tb.fontH = Tb.font.getHeight();
+      Tb.random = new JavaRandom(Date.now() ^ Math.floor(Math.random() * 1e9));
+      Tb.loadImages(); Level.createBackground(); Options.Load(); Tb.preloaderReady = true;
+    },
+    loadImages() { Tb.img = ["actor", "absorber", "scion", "tiles_32x32", "explosion", "bonus"].map((n) => Image.createImage("/" + n + ".png")); },
+    checkCollision(x1, y1, x2, y2, x3, y3, x4, y4) { return x2 >= x3 && x4 >= x1 && y2 >= y3 && y4 >= y1; },
+    checkColRect(x1, y1, w1, h1, x3, y3, w2, h2) { return Tb.checkCollision(x1, y1, x1 + w1, y1 + h1, x3, y3, x3 + w2, y3 + h2); },
+    checkColRectTol(x1, y1, w1, h1, x3, y3, w2, h2, tol) {
+      x3 = x3 + div(tol, 2); y3 = y3 + div(tol, 2); w2 = w2 - tol; h2 = h2 - tol;
+      return Tb.checkCollision(x1, y1, x1 + w1, y1 + h1, x3, y3, x3 + w2, y3 + h2);
+    },
+    drawOutlineString(s, x, y, a, f, g) {
+      g.setFont(f); g.setColor(0x000000);
+      g.drawString(s, x + 1, y, a); g.drawString(s, x, y + 1, a); g.drawString(s, x - 1, y, a); g.drawString(s, x, y - 1, a);
+      g.setColor(0xFFFFFF); g.drawString(s, x, y, a);
+    },
+    pumpTimer() { Tb.timer = sb(Tb.timer + 1); if (Tb.timer > 127) Tb.timer = 0; },
+    getFrame(frame, min, max, step) {
+      if (frame < min || frame > max) frame = min;
+      if (step < 1) step = 1;
+      if (Tb.timer % step === 0) { frame = sb(frame + 1); if (frame > max) frame = min; }
+      return frame;
+    },
+    plotFrame(image, width, height, frame, x, y, g) {
+      g.setClip(x, y, width, height);
+      g.drawImage(Tb.img[image], x - frame * width, y, Tb.anchor);
+      g.setClip(-Actor.xt, -Actor.yt, Tb.w, Tb.h);
+    },
+    getRnd(grenze) { return (Tb.random.nextInt() >>> 1) % (grenze + 1); },
+    clearScreen(c, g) { g.setColor(c); g.fillRect(0, 0, Tb.w, Tb.h); },
+  };
+
+  const Preloader = {
+    drawGauche(g, loaded, max) {
+      if (loaded >= max) loaded = max;
+      const W = Tb.w - 20, Y = Tb.h - 20, percent = div(loaded * 100, max), L = div(percent * W, 100);
+      g.drawRect(div(Tb.w, 2) - div(W, 2) - 2, Y - 2, W + 3, 5 + 3);
+      g.fillRect(div(Tb.w, 2) - div(W, 2), Y, L, 5);
+    },
+  };
+
+  const SCION = 1, ABSORBER = 2, OUT = -999999999;
+  class Sprite {
+    constructor() { this.type = -1; this.img = 0; this.frameAnz = 1; this.x = 0; this.y = 0; this.w = 0; this.h = 0; this.speed = 0; this.hit = false; this.dir = 0; this.frame = 0; this.min = 0; this.max = 0; this.step = 3; this.eventFrame = 0; this.drawAlways = false; }
+  }
+  class Actor extends Sprite {
+    constructor() { super(); this.score = 0; this.type = 0; this.img = Tb.actorPNG; this.frameAnz = 16; this.min = 1; this.max = 1; this.step = 3; this.speed = 3; SpriteTool.setDim(this); }
+    init() { this.score = 0; }
+    draw(g) { SpriteTool.putOnScreen(this, g); }
+    move() {
+      const b = () => Level.checkBorderTiles(this) || Level.checksemiBorderTiles(this);
+      if (Ac.left) { this.x -= this.speed; this.min = 8; this.max = 11; if (b()) this.x += this.speed; }
+      if (Ac.right) { this.x += this.speed; this.min = 12; this.max = 15; if (b()) this.x -= this.speed; }
+      if (Ac.up) { this.y -= this.speed; this.min = 4; this.max = 7; if (b()) this.y += this.speed; }
+      if (Ac.down) { this.y += this.speed; this.min = 0; this.max = 3; if (b()) this.y -= this.speed; }
+      if (!Ac.left && !Ac.right && !Ac.up && !Ac.down) {
+        if (this.min === 8) { this.min = 9; this.max = 9; }
+        if (this.min === 12) { this.min = 13; this.max = 13; }
+        if (this.min === 4) { this.min = 5; this.max = 5; }
+        if (this.min === 0) { this.min = 1; this.max = 1; }
+      }
+      if (Level.getTile(this) === Level.BONUS_ITEM) { this.score += 150; Level.clearTile(this); }
+    }
+    scrollMap(g) { Actor.xt = div(Tb.w, 2) - div(this.w, 2) - this.x; Actor.yt = div(Tb.h, 2) - div(this.h, 2) - this.y; g.translate(Actor.xt, Actor.yt); }
+  }
+  Actor.xt = 0; Actor.yt = 0;
+  class Scion extends Sprite {
+    constructor() { super(); this.moveType = 1; this.type = SCION; this.img = Tb.scionPNG; this.frameAnz = 2; this.min = 0; this.max = 1; this.step = 3; this.speed = 2; SpriteTool.setDim(this); this.init(); }
+    init() { this.eventFrame = 0; this.hit = false; this.x = OUT; this.rescueAnimation = false; this.speed = 2; }
+    draw(g) {
+      if (this.rescueAnimation) SpriteTool.rescueAnimation(this, g);
+      else { SpriteTool.move(this, this.moveType); if (Level.getTile(this) === Level.GOAL) this.rescueAnimation = true; SpriteTool.putOnScreen(this, g); }
+    }
+  }
+  class Absorber extends Sprite {
+    constructor() { super(); this.moveType = 0; this.type = ABSORBER; this.img = Tb.absorberPNG; this.frameAnz = 4; this.speed = 1; SpriteTool.setDim(this); this.init(); }
+    init() { this.eventFrame = 0; this.hit = false; }
+    draw(g) {
+      SpriteTool.move(this, this.moveType);
+      const s = this;
+      if (s.dir === 0) { s.min = 2; s.max = 2; } if (s.dir === 1) { s.min = 0; s.max = 0; }
+      if (s.dir === 2) { s.min = 1; s.max = 1; } if (s.dir === 3) { s.min = 3; s.max = 3; }
+      SpriteTool.putOnScreen(this, g);
+    }
+  }
+
+  const SpriteTool = {
+    setDim(s) { s.w = div(Tb.img[s.img].getWidth(), s.frameAnz); s.h = Tb.img[s.img].getHeight(); },
+    move(s, t) { if (t === 0) { if (!s.hit) SpriteTool.moveRnd(s); } else if (t === 1) { if (!s.hit) SpriteTool.followActor(s); } },
+    moveRnd(s) {
+      if (Tb.getRnd(1000) % 25 === 0) s.dir = sb(Tb.getRnd(3));
+      let loop = 0;
+      while (!SpriteTool.moveAndCheckBorders(s)) { s.dir = sb(Tb.getRnd(3)); loop++; if (loop > 3) break; }
+    },
+    moveAndCheckBorders(s) {
+      if (s.dir === 0) s.y -= s.speed; if (s.dir === 1) s.y += s.speed; if (s.dir === 2) s.x -= s.speed; if (s.dir === 3) s.x += s.speed;
+      if (Level.checkBorderTiles(s) || Level.checksemiBorderTiles(s) || SpriteTool.checkColWithAllSprites(s) || SpriteTool.checkColSprites(s, Game.actor)) {
+        if (s.dir === 0) s.y += s.speed; if (s.dir === 1) s.y -= s.speed; if (s.dir === 2) s.x += s.speed; if (s.dir === 3) s.x -= s.speed;
+        return false;
+      }
+      return true;
+    },
+    followActor(s) {
+      const hd = (Game.actor.x - s.x) >>> 1, vd = (Game.actor.y - s.y) >>> 1;
+      if (vd > s.speed) { s.dir = Game.actor.y < s.y ? 0 : 1; SpriteTool.moveAndCheckBorders(s); }
+      if (hd > s.speed) { s.dir = Game.actor.x < s.x ? 2 : 3; SpriteTool.moveAndCheckBorders(s); }
+    },
+    drawSprites(g) {
+      for (const t of [SCION, ABSORBER]) {
+        const s = Game.getSprite(t);
+        if (s) for (let j = 0; j < s.length; j++) if (SpriteTool.checkForScreen(s[j])) s[j].draw(g);
+      }
+    },
+    putOnScreen(s, g) {
+      if (!s.hit) { s.frame = Tb.getFrame(s.frame, s.min, s.max, s.step); Tb.plotFrame(s.img, s.w, s.h, s.frame, s.x, s.y, g); }
+      else SpriteTool.showExplosion(s, g);
+    },
+    checkColSprites(s1, s2) {
+      const hit = Tb.checkColRectTol(s1.x, s1.y, s1.w, s1.h, s2.x, s2.y, s2.w, s2.h, 5);
+      if (hit && s1.type === SCION && !s1.hit && s2.type === ABSORBER) { s1.hit = true; Game.scionsLeft--; }
+      if (hit && s2.type === SCION && !s2.hit && s1.type === ABSORBER) { s2.hit = true; Game.scionsLeft--; }
+      return hit;
+    },
+    checkColWithAllSprites(sp) {
+      for (const t of [SCION, ABSORBER]) {
+        const s = Game.getSprite(t);
+        if (s) for (let j = 0; j < s.length; j++) if (s[j] && s[j] !== sp) { if (SpriteTool.checkColSprites(sp, s[j])) return true; }
+      }
+      return false;
+    },
+    checkForScreen(s) {
+      if (s.drawAlways) return true;
+      if (s.x === OUT) return false;
+      return Tb.checkColRect(s.x, s.y, s.w, s.h, -Actor.xt, -Actor.yt, Tb.w, Tb.h);
+    },
+    showExplosion(s, g) {
+      const w = div(Tb.img[Tb.explosionPNG].getWidth(), 4), h = Tb.img[Tb.explosionPNG].getHeight();
+      const x = s.x - div(w - s.w, 2), y = s.y - div(h - s.h, 2);
+      s.eventFrame = Tb.getFrame(s.eventFrame, 0, 3, 3);
+      Tb.plotFrame(Tb.explosionPNG, w, h, s.eventFrame, x, y, g);
+      if (s.eventFrame >= 3) s.init();
+    },
+    rescueAnimation(s, g) {
+      s.x += s.speed; s.y -= s.speed; s.speed += 1; s.hit = true;
+      if (!SpriteTool.checkForScreen(s)) { Game.actor.score += 10; Game.scionsLeft--; Game.scionsSaved++; s.init(); }
+      s.frame = Tb.getFrame(s.frame, s.min, s.max, s.step);
+      Tb.plotFrame(s.img, s.w, s.h, s.frame, s.x, s.y, g);
+      if (Ac.remaster) { Ac.dankeZeit = 12; return; }
+      g.setColor(0xFFFFFF);
+      g.drawString(Ac.jana ? "Danke Jana!" : "Danke!", -Actor.xt + div(Tb.w, 2), -Actor.yt + 5, Tb.anchorM);
+    },
+  };
+
+  const Game = {
+    actor: null, scion: null, absorber: null, ABSORBER_ANZ: 50, SCIONS_ANZ: 40, scionsLeft: 40, scionsSaved: 0, LEVEL_ANZ: 4, Levelnr: 1,
+    MENU: 1, PLAY: 2, PAUSE: 3, INIT: 4, ANLEITUNG: 5, INTERNET: 6, INTRO: 7, GAME_OVER: 8, FINISHED: 9, OPTIONS: 10,
+    GAMESTATE: [6], screenTimer: 0,
+    getSprite(t) { return t === SCION ? Game.scion : t === ABSORBER ? Game.absorber : null; },
+    init() {
+      Game.scionsLeft = Game.SCIONS_ANZ; Game.scionsSaved = 0;
+      Level.generateMap(Game.Levelnr);
+      Game.actor = new Actor(); Game.setValidPos(Game.actor);
+      Game.scion = new Array(Game.SCIONS_ANZ).fill(null);
+      for (let i = 0; i < Game.scion.length; i++) { Game.scion[i] = new Scion(); Game.setValidPos(Game.scion[i]); }
+      Game.absorber = new Array(Game.ABSORBER_ANZ).fill(null);
+      for (let i = 0; i < Game.absorber.length; i++) { Game.absorber[i] = new Absorber(); Game.setValidPos(Game.absorber[i]); }
+    },
+    setValidPos(s) {
+      let col = true;
+      while (col) {
+        s.x = Tb.getRnd((Level.tiles_w - 1) * Level.RASTER); s.y = Tb.getRnd((Level.tiles_h - 1) * Level.RASTER);
+        col = Level.checkAllBorderTiles(s);
+        if (!col) col = SpriteTool.checkColWithAllSprites(s);
+        if (!col && s !== Game.actor) col = SpriteTool.checkColSprites(s, Game.actor);
+      }
+    },
+    drawGame(g) {
+      Tb.clearScreen(0, g); Tb.pumpTimer();
+      switch (Game.GAMESTATE[0]) {
+        case 1: MainMenu.drawMenu(g); break;
+        case 3: Tb.drawOutlineString("PAUSE", 10, 10, Tb.anchor, Tb.font, g); break;
+        case 4: Game.GAMESTATE[0] = Game.INTRO; break;
+        case 5: Game.drawAnleitung(g); break;
+        case 6: Game.drawInternet(g); break;
+        case 10: Options.drawMenu(g); break;
+        case 2: Game.play(g); break;
+        case 7: Game.intro(g); break;
+        case 8: Game.game_over(g); break;
+        case 9: Game.finished(g); break;
+      }
+    },
+    drawAnleitung(g) {
+      Game.screenTimer++;
+      const z = ["2/oben \t Schritt nach oben", "8/unten \t Schritt nach unten", "4/links \t Schritt nach links", "6/rechts \t Schritt nach rechts", "1 \t Pause", "3 \t Zurück zum Menü"];
+      z.forEach((s, i) => Tb.drawOutlineString(s, 0, (Tb.fontH + 2) * i, Tb.anchor, Tb.font, g));
+      if (Ac.anyKey && Game.screenTimer > 4) { Game.screenTimer = 0; Ac.fire = false; Game.GAMESTATE[0] = Game.MENU; }
+    },
+    drawInternet(g) {
+      Game.screenTimer++;
+      if (Ac.jana) {
+        Tb.drawOutlineString("Hallo Jana!", 0, 0, Tb.anchor, Tb.font, g);
+        Tb.drawOutlineString("Willkommen zu deinem", 0, 25, Tb.anchor, Tb.font, g);
+        Tb.drawOutlineString("persönlichem Spiel:", 0, 50, Tb.anchor, Tb.font, g);
+        Tb.drawOutlineString("'Babys retten!'", 0, 75, Tb.anchor, Tb.font, g);
+      } else {
+        Tb.drawOutlineString("Willkommen bei", 0, 0, Tb.anchor, Tb.font, g);
+        Tb.drawOutlineString("'Babys retten!'", 0, 25, Tb.anchor, Tb.font, g);
+      }
+      Preloader.drawGauche(g, Game.screenTimer, 20);
+      if (Game.screenTimer > 20) { Game.screenTimer = 0; Game.GAMESTATE[0] = Game.MENU; }
+    },
+    play(g) {
+      Game.actor.move(g); Game.actor.scrollMap(g); Level.drawTiles(g); SpriteTool.drawSprites(g); Game.actor.draw(g);
+      g.translate(-Actor.xt, -Actor.yt);
+      if (!Ac.remaster) Game.drawHUD(g);
+      Game.screenTimer = 0;
+      if (Game.scionsLeft <= 0 && Game.scionsSaved === 0) Game.GAMESTATE[0] = Game.GAME_OVER;
+      if (Game.scionsLeft <= 0 && Game.scionsSaved > 0) Game.GAMESTATE[0] = Game.FINISHED;
+    },
+    intro(g) {
+      Game.screenTimer++;
+      Tb.drawOutlineString(Ac.jana ? "Jana, rette die Marsbabys!" : "Rette die Marsbabys!", div(Tb.w, 2), div(Tb.h, 2), Tb.anchorM, Tb.font, g);
+      if (Ac.anyKey && Game.screenTimer > 5) { Game.screenTimer = 0; Game.init(); Game.GAMESTATE[0] = Game.PLAY; }
+    },
+    game_over(g) {
+      Game.screenTimer++;
+      Tb.drawOutlineString("Verloren... - die armen Babys!", div(Tb.w, 2), div(Tb.h, 2), Tb.anchorM, Tb.font, g);
+      Tb.drawOutlineString("Drücke eine Taste!", div(Tb.w, 2), div(Tb.h, 2) + 20, Tb.anchorM, Tb.font, g);
+      if (Ac.anyKey && Game.screenTimer > 5) { Game.screenTimer = 0; Game.init(); Game.GAMESTATE[0] = Game.PLAY; }
+    },
+    finished(g) {
+      Game.screenTimer++;
+      Tb.drawOutlineString("Babys gerettet: " + Game.scionsSaved + "/" + Game.SCIONS_ANZ, div(Tb.w, 2), div(Tb.h, 2), Tb.anchorM, Tb.font, g);
+      Tb.drawOutlineString("Punkte: " + Game.actor.score, div(Tb.w, 2), div(Tb.h, 2) + 20, Tb.anchorM, Tb.font, g);
+      if (Ac.anyKey && Game.screenTimer > 5) { Game.screenTimer = 0; Game.init(); Game.GAMESTATE[0] = Game.INTRO; }
+    },
+    drawHUD(g) {
+      g.setFont(Tb.font); g.setColor(0xFFFFFF);
+      g.drawString("P: " + Game.actor.score, 5, 5, Tb.anchor);
+      g.drawString("L: " + Game.scionsLeft, 5, 5 + Tb.fontH, Tb.anchor);
+      g.drawString("S: " + Game.scionsSaved, 5, 5 + Tb.fontH * 2, Tb.anchor);
+      const e = "-> 3";
+      g.drawString(e, Tb.w - Tb.font.stringWidth(e) - 5, Tb.h - Tb.fontH - 5, Tb.anchor);
+    },
+  };
+
+  function menue(eintraege, zeichnenExtra, wahl) {
+    const m = {
+      index: 0,
+      drawMenu(g) {
+        g.setFont(Tb.font);
+        const x = div(Tb.w, 2) - div(Tb.font.stringWidth(eintraege[m.index]), 2), y = div(Tb.h, 2);
+        g.setColor(255, 255, 255); g.drawString(eintraege[m.index], x, y, Tb.anchor);
+        if (zeichnenExtra) zeichnenExtra(g, eintraege[m.index]);
+        if (Ac.left) { Ac.left = false; m.index--; }
+        if (Ac.right) { Ac.right = false; m.index++; }
+        if (m.index < 0) m.index = eintraege.length - 1;
+        if (m.index > eintraege.length - 1) m.index = 0;
+        Ac.drawSK("Wählen", "", g);
+        if (Ac.lsk || Ac.fire) { Ac.lsk = false; Ac.fire = false; wahl(eintraege[m.index]); }
+      },
+    };
+    return m;
+  }
+  const MainMenu = menue(["< Neues Spiel >", "< Optionen >", "< Anleitung >", "< Verlassen >"], null, (s) => {
+    if (s === "< Neues Spiel >") Game.GAMESTATE[0] = Game.INIT;
+    else if (s === "< Optionen >") Game.GAMESTATE[0] = Game.OPTIONS;
+    else if (s === "< Verlassen >") Ac.beendet = true;
+    else if (s === "< Anleitung >") Game.GAMESTATE[0] = Game.ANLEITUNG;
+  });
+  const Options = menue(["< Mehr Babys >", "< Weniger Babys >", "< Mehr Monster >", "< Weniger Monster >", "< Level+ >", "< Level- >", "< Zurück >"], (g, e) => {
+    const y = div(Tb.h, 2);
+    if (e === "< Mehr Babys >" || e === "< Weniger Babys >") g.drawString("Babys: " + Game.SCIONS_ANZ, div(Tb.w, 2) - div(Tb.font.stringWidth("Babys: 00"), 2), y + 25, Tb.anchor);
+    if (e === "< Mehr Monster >" || e === "< Weniger Monster >") g.drawString("Monster: " + Game.ABSORBER_ANZ, div(Tb.w, 2) - div(Tb.font.stringWidth("Monster: 00"), 2), y + 25, Tb.anchor);
+    if (e === "< Level+ >" || e === "< Level- >") g.drawString("Level: " + Game.Levelnr, div(Tb.w, 2) - div(Tb.font.stringWidth("Level: 0"), 2), y + 25, Tb.anchor);
+  }, (s) => {
+    if (s === "< Mehr Babys >") { Game.SCIONS_ANZ++; if (Game.SCIONS_ANZ > 200) Game.SCIONS_ANZ = 200; }
+    else if (s === "< Weniger Babys >") { Game.SCIONS_ANZ--; if (Game.SCIONS_ANZ < 1) Game.SCIONS_ANZ = 1; }
+    else if (s === "< Mehr Monster >") { Game.ABSORBER_ANZ++; if (Game.ABSORBER_ANZ > 200) Game.ABSORBER_ANZ = 200; }
+    else if (s === "< Weniger Monster >") { Game.ABSORBER_ANZ--; if (Game.ABSORBER_ANZ < 1) Game.ABSORBER_ANZ = 1; }
+    else if (s === "< Level+ >") { Game.Levelnr++; if (Game.Levelnr > Game.LEVEL_ANZ) Game.Levelnr = 1; }
+    else if (s === "< Level- >") { Game.Levelnr--; if (Game.Levelnr < 1) Game.Levelnr = Game.LEVEL_ANZ; }
+    else if (s === "< Zurück >") { Options.Save(); Game.GAMESTATE[0] = Game.MENU; }
+  });
+  Options.Load = () => {
+    if (Speicher.da("a")) Game.SCIONS_ANZ = Speicher.lesen("a");
+    if (Speicher.da("b")) Game.ABSORBER_ANZ = Speicher.lesen("b");
+    if (Speicher.da("c")) Game.Levelnr = Speicher.lesen("c");
+  };
+  Options.Save = () => { Speicher.schreiben("a", Game.SCIONS_ANZ); Speicher.schreiben("b", Game.ABSORBER_ANZ); Speicher.schreiben("c", Game.Levelnr); };
+
+  const Level = {
+    levelMap: null, tiles_w: 30, tiles_h: 30, RASTER: 32, EMPTY: -1, GOAL: 5, BONUS_ITEM: 6, bgImg: null, bgImg_w: 0, bgImg_h: 0, bonusFrame: 0,
+    karten: null,   // wird von bauen.py aus classic\Level.cs eingesetzt
+    generateMap(nr) {
+      Level.tiles_w = 30; Level.tiles_h = 30;
+      const k = Level.karten[nr - 1];
+      Level.levelMap = [];
+      for (let h = 0; h < 30; h++) Level.levelMap.push(Int8Array.from(k.slice(h * 30, h * 30 + 30)));
+    },
+    createBackground() {
+      const R = Level.RASTER;
+      Level.bgImg_w = div(div(Tb.w + R * 4, 2), R) * R; Level.bgImg_h = div(div(Tb.h + R * 4, 2), R) * R;
+      Level.bgImg = Image.createImage(Level.bgImg_w, Level.bgImg_h);
+      const b = Level.bgImg.getGraphics();
+      for (let sp = 0; sp <= Level.bgImg_w; sp += R) for (let ze = 0; ze <= Level.bgImg_h; ze += R) { b.setClip(sp, ze, R, R); b.drawImage(Tb.img[Tb.tilesPNG], sp, ze, Tb.anchor); }
+    },
+    drawBG(g) {
+      const R = Level.RASTER;
+      let ox = -Actor.xt, oy = -Actor.yt;
+      ox = div(ox, R) * R; oy = div(oy, R) * R;
+      g.drawImage(Level.bgImg, ox - R, oy - R, Tb.anchor);
+      g.drawImage(Level.bgImg, ox - R, oy - R + Level.bgImg_h, Tb.anchor);
+      g.drawImage(Level.bgImg, ox - R + Level.bgImg_w, oy - R, Tb.anchor);
+      g.drawImage(Level.bgImg, ox - R + Level.bgImg_w, oy - R + Level.bgImg_h, Tb.anchor);
+    },
+    drawTiles(g) {
+      const R = Level.RASTER;
+      Level.drawBG(g);
+      Level.bonusFrame = Tb.getFrame(Level.bonusFrame, 0, 3, 4);
+      for (let x = -Actor.xt; x < -Actor.xt + Tb.w; x += R)
+        for (let y = -Actor.yt; y < -Actor.yt + Tb.h; y += R) {
+          x = div(x, R) * R; y = div(y, R) * R;
+          if (x >= 0 && x < Level.tiles_w * R && y >= 0 && y < Level.tiles_h * R) {
+            const t = Level.levelMap[div(y, R)][div(x, R)];
+            if (t !== Level.EMPTY) {
+              if (t === Level.BONUS_ITEM) Tb.plotFrame(Tb.bonusPNG, R, R, Level.bonusFrame, x, y, g);
+              else Tb.plotFrame(Tb.tilesPNG, R, R, t, x, y, g);
+            }
+          }
+        }
+    },
+    ecken(s, oben) {
+      const R = Level.RASTER, y1 = oben === null ? s.y : s.y + div(3 * s.h, 4);
+      const m = (yy, xx) => { const zeile = Level.levelMap[div(yy, R)]; if (!zeile || div(xx, R) >= zeile.length || div(xx, R) < 0) throw new RangeError("Index"); return zeile[div(xx, R)]; };
+      return [m(y1, s.x), m(y1, s.x + s.w), m(s.y + s.h, s.x), m(s.y + s.h, s.x + s.w)];
+    },
+    checkAllBorderTiles(s) { return Level.ecken(s, null).some((c) => c === 1 || c === 2 || c === 3 || c === 4); },
+    checkBorderTiles(s) { return Level.ecken(s, null).some((c) => c === 1); },
+    checksemiBorderTiles(s) { return Level.ecken(s, true).some((c) => c === 2 || c === 3 || c === 4); },
+    feld(s) { const R = Level.RASTER, zeile = Level.levelMap[div(s.y + div(s.h, 2), R)], x = div(s.x + div(s.w, 2), R); if (!zeile || x < 0 || x >= zeile.length) throw new RangeError("Index"); return [zeile, x]; },
+    getTile(s) { const [z, x] = Level.feld(s); return z[x]; },
+    clearTile(s) { const [z, x] = Level.feld(s); z[x] = Level.EMPTY; },
+  };
+
+  // ------------------------------------------------------------------ Laden
+  async function laden(dateien, inflate) {
+    for (const [n, d] of Object.entries(dateien)) {
+      if (n.endsWith(".png")) bilder[n] = await pngLesen(d, inflate);
+      else texte[n] = typeof d === "string" ? d : new TextDecoder().decode(d);
+    }
+  }
+
+  return { div, sb, Image, Graphics, Font, JavaRandom, Speicher, Ac, Tb, Game, Level, Options, MainMenu, laden, bilder };
+})();
+if (typeof module !== "undefined") module.exports = BR;
+</script>
+<script>// Gemeinsame Hilfen der Handy-Oberfläche: Übertragung von ..\..\Gemeinsam\Retro.cs (Farben, Pixelschrift 5x7, Malen, Eingabe)
+// und ..\..\Gemeinsam\Effekte.cs (Splitter, Sterne, Lichtringe, Wackeln, Blitz, Leuchten, Skaliert).
+"use strict";
+var BRRetro = (function () {
+  const { div } = BR;
+  const F = {
+    Nacht: 0xFF0B1020, Leiste: 0xFF141B33, Rand: 0xFF2E3B66, Text: 0xFFF2F4FA, Blass: 0xFF8C96B8,
+    Gold: 0xFFF5C542, GoldDunkel: 0xFF8A6A12, Blau: 0xFF5AB4FF, Gruen: 0xFF62D67A, Rot: 0xFFFF5A5A, Schatten: 0xFF05070F,
+  };
+  for (const k in F) F[k] = F[k] >>> 0;
+
+  // ------------------------------------------------------------------ Pixelschrift 5x7 (wie Retro.cs)
+  const Z = {
+    " ": ".....|.....|.....|.....|.....|.....|.....", A: ".###.|#...#|#...#|#####|#...#|#...#|#...#", B: "####.|#...#|#...#|####.|#...#|#...#|####.",
+    C: ".###.|#...#|#....|#....|#....|#...#|.###.", D: "####.|#...#|#...#|#...#|#...#|#...#|####.", E: "#####|#....|#....|####.|#....|#....|#####",
+    F: "#####|#....|#....|####.|#....|#....|#....", G: ".###.|#...#|#....|#.###|#...#|#...#|.####", H: "#...#|#...#|#...#|#####|#...#|#...#|#...#",
+    I: ".###.|..#..|..#..|..#..|..#..|..#..|.###.", J: "..###|...#.|...#.|...#.|...#.|#..#.|.##..", K: "#...#|#..#.|#.#..|##...|#.#..|#..#.|#...#",
+    L: "#....|#....|#....|#....|#....|#....|#####", M: "#...#|##.##|#.#.#|#.#.#|#...#|#...#|#...#", N: "#...#|#...#|##..#|#.#.#|#..##|#...#|#...#",
+    O: ".###.|#...#|#...#|#...#|#...#|#...#|.###.", P: "####.|#...#|#...#|####.|#....|#....|#....", Q: ".###.|#...#|#...#|#...#|#.#.#|#..#.|.##.#",
+    R: "####.|#...#|#...#|####.|#.#..|#..#.|#...#", S: ".####|#....|#....|.###.|....#|....#|####.", T: "#####|..#..|..#..|..#..|..#..|..#..|..#..",
+    U: "#...#|#...#|#...#|#...#|#...#|#...#|.###.", V: "#...#|#...#|#...#|#...#|#...#|.#.#.|..#..", W: "#...#|#...#|#...#|#.#.#|#.#.#|#.#.#|.#.#.",
+    X: "#...#|#...#|.#.#.|..#..|.#.#.|#...#|#...#", Y: "#...#|#...#|.#.#.|..#..|..#..|..#..|..#..", Z: "#####|....#|...#.|..#..|.#...|#....|#####",
+    "Ä": ".#.#.|.....|.###.|#...#|#####|#...#|#...#", "Ö": ".#.#.|.....|.###.|#...#|#...#|#...#|.###.", "Ü": ".#.#.|.....|#...#|#...#|#...#|#...#|.###.",
+    0: ".###.|#...#|#..##|#.#.#|##..#|#...#|.###.", 1: "..#..|.##..|..#..|..#..|..#..|..#..|.###.", 2: ".###.|#...#|....#|...#.|..#..|.#...|#####",
+    3: "####.|....#|....#|.###.|....#|....#|####.", 4: "...#.|..##.|.#.#.|#..#.|#####|...#.|...#.", 5: "#####|#....|####.|....#|....#|#...#|.###.",
+    6: "..##.|.#...|#....|####.|#...#|#...#|.###.", 7: "#####|....#|...#.|..#..|.#...|.#...|.#...", 8: ".###.|#...#|#...#|.###.|#...#|#...#|.###.",
+    9: ".###.|#...#|#...#|.####|....#|...#.|.##..", ".": ".....|.....|.....|.....|.....|.##..|.##..", ",": ".....|.....|.....|.....|.##..|..#..|.#...",
+    ":": ".....|.##..|.##..|.....|.##..|.##..|.....", "!": "..#..|..#..|..#..|..#..|..#..|.....|..#..", "?": ".###.|#...#|....#|...#.|..#..|.....|..#..",
+    "-": ".....|.....|.....|.###.|.....|.....|.....", "+": ".....|..#..|..#..|#####|..#..|..#..|.....", "/": "....#|...#.|...#.|..#..|.#...|.#...|#....",
+    "'": "..#..|..#..|.....|.....|.....|.....|.....", "(": "...#.|..#..|.#...|.#...|.#...|..#..|...#.", ")": ".#...|..#..|...#.|...#.|...#.|..#..|.#...",
+    "<": "...#.|..#..|.#...|#....|.#...|..#..|...#.", ">": ".#...|..#..|...#.|....#|...#.|..#..|.#...", "=": ".....|.....|#####|.....|#####|.....|.....",
+    "·": ".....|.....|.....|..#..|.....|.....|.....", "◀": "...#.|..##.|.###.|####.|.###.|..##.|...#.", "▶": ".#...|.##..|.###.|.####|.###.|.##..|.#...",
+    "↑": "..#..|.###.|#.#.#|..#..|..#..|..#..|..#..", "↓": "..#..|..#..|..#..|..#..|#.#.#|.###.|..#..", "←": ".....|..#..|.#...|#####|.#...|..#..|.....",
+    "→": ".....|..#..|...#.|#####|...#.|..#..|.....",
+  };
+  const raster = {};
+  function R(c) {
+    if (raster[c]) return raster[c];
+    const z = (Z[c] || Z["?"]).split("|"), r = [];
+    for (let y = 0; y < 7; y++) for (let x = 0; x < 5; x++) r.push(z[y][x] === "#");
+    return (raster[c] = r);
+  }
+  const gross = (s) => s.replace(/ß/g, "SS").toUpperCase();
+  const breite = (s, g = 1) => Math.max(0, gross(s).length * 6 * g - g);
+
+  function rechteck(z, x, y, b, h, c) {
+    const x0 = Math.max(x, 0), y0 = Math.max(y, 0), x1 = Math.min(x + b, z.Breite), y1 = Math.min(y + h, z.Hoehe);
+    if (x1 <= x0) return;
+    for (let yy = y0; yy < y1; yy++) z.Pixel.fill(c, yy * z.Breite + x0, yy * z.Breite + x1);
+  }
+  function mischen(alt, c, a) {
+    const r = div(((c >>> 16) & 255) * a + ((alt >>> 16) & 255) * (255 - a), 255);
+    const g = div(((c >>> 8) & 255) * a + ((alt >>> 8) & 255) * (255 - a), 255);
+    const b = div((c & 255) * a + (alt & 255) * (255 - a), 255);
+    return (0xFF000000 | (r << 16) | (g << 8) | b) >>> 0;
+  }
+  function schleier(z, x, y, b, h, c, a) {
+    for (let yy = Math.max(y, 0); yy < Math.min(y + h, z.Hoehe); yy++)
+      for (let xx = Math.max(x, 0); xx < Math.min(x + b, z.Breite); xx++) z.Pixel[yy * z.Breite + xx] = mischen(z.Pixel[yy * z.Breite + xx], c, a);
+  }
+  function text(z, s, x, y, c, g = 1, sch = 0) {
+    s = gross(s);
+    if (sch) text(z, s, x + g, y + g, sch, g, 0);
+    for (const ch of s) {
+      const r = R(ch);
+      for (let yy = 0; yy < 7; yy++) for (let xx = 0; xx < 5; xx++) if (r[yy * 5 + xx]) rechteck(z, x + xx * g, y + yy * g, g, g, c);
+      x += 6 * g;
+    }
+  }
+  const mitte = (z, s, mx, y, c, g = 1, sch = F.Schatten) => text(z, s, mx - div(breite(s, g), 2), y, c, g, sch);
+  const rechts = (z, s, rx, y, c, g = 1, sch = F.Schatten) => text(z, s, rx - breite(s, g), y, c, g, sch);
+  function tafel(z, x, y, b, h, f = F.Leiste, r = F.Rand) {
+    rechteck(z, x + 2, y, b - 4, h, r); rechteck(z, x, y + 2, b, h - 4, r); rechteck(z, x + 1, y + 1, b - 2, h - 2, r);
+    rechteck(z, x + 2, y + 1, b - 4, h - 2, f); rechteck(z, x + 1, y + 2, b - 2, h - 4, f);
+  }
+  function bild(z, q, sx, sy, sb, sh, dx, dy, g = 1) {
+    for (let yy = 0; yy < sh; yy++) for (let xx = 0; xx < sb; xx++) {
+      const p = q.Pixel[(sy + yy) * q.Breite + sx + xx];
+      if (p >>> 24 < 128) continue;
+      rechteck(z, dx + xx * g, dy + yy * g, g, g, (p | 0xFF000000) >>> 0);
+    }
+  }
+  function kopieren(z, q, dx, dy) { for (let yy = 0; yy < q.Hoehe; yy++) z.Pixel.set(q.Pixel.subarray(yy * q.Breite, yy * q.Breite + q.Breite), (dy + yy) * z.Breite + dx); }
+  function hintergrund(z, k, zeit) {
+    const ox = div(zeit, 2) % 32, oy = div(zeit, 3) % 32;
+    for (let y = 0; y < z.Hoehe; y++) { const qy = (y + oy) % 32; for (let x = 0; x < z.Breite; x++) z.Pixel[y * z.Breite + x] = mischen((k.Pixel[qy * k.Breite + (x + ox) % 32] | 0xFF000000) >>> 0, F.Nacht, 185); }
+  }
+
+  // ------------------------------------------------------------------ Eingabe und Menü
+  // msJeBild: Takt der Anzeige; Verzug 0,4 s und Wiederholung 0,12 s gelten bei jedem Takt (wie Retro.cs)
+  class Eingabe {
+    constructor(msJeBild = 40) { this.dauer = [0, 0, 0, 0]; this.alt = {}; this.irgendAlt = 0; this.verzug = Math.round(400 / msJeBild); this.wdh = Math.max(1, Math.round(120 / msJeBild)); }
+    lesen(t) {   // t: Set gehaltener Tasten (hoch, runter, links, rechts, ok, zurueck, pause)
+      this.Hoch = t.has("hoch"); this.Runter = t.has("runter"); this.Links = t.has("links"); this.Rechts = t.has("rechts"); this.Ok = t.has("ok");
+      const neu = (n) => { const r = t.has(n) && !this.alt[n]; return r; };
+      this.OkNeu = neu("ok"); this.ZurueckNeu = neu("zurueck"); this.PauseNeu = neu("pause");
+      for (const n of ["ok", "zurueck", "pause"]) this.alt[n] = t.has(n);
+      this.IrgendeineNeu = t.size > this.irgendAlt; this.irgendAlt = t.size;
+      const w = (i, an) => { if (!an) { this.dauer[i] = 0; return false; } this.dauer[i]++; return this.dauer[i] === 1 || (this.dauer[i] > this.verzug && (this.dauer[i] - this.verzug) % this.wdh === 0); };
+      this.HochSchritt = w(0, this.Hoch); this.RunterSchritt = w(1, this.Runter); this.LinksSchritt = w(2, this.Links); this.RechtsSchritt = w(3, this.Rechts);
+    }
+  }
+
+  // ------------------------------------------------------------------ Effekte (wie Gemeinsam\Effekte.cs, ohne Zahlen)
+  // Splitter und Sterne mit Licht, Lichtringe, Wackeln, Blitz; eigener Zufall, der Spielzufall bleibt unberührt.
+  // Zeiten zählen in Bildern der Anzeige (60/s).
+  const klip = { x0: 0, y0: 0, x1: 1e9, y1: 1e9 };
+  const klippen = (x0, y0, x1, y1) => { klip.x0 = x0; klip.y0 = y0; klip.x1 = x1; klip.y1 = y1; };
+  const klippenAus = () => klippen(0, 0, 1e9, 1e9);
+  // Licht dazuaddieren
+  function leuchten(z, x, y, c, a) {
+    x |= 0; y |= 0; a |= 0;
+    if (a <= 0 || x < Math.max(0, klip.x0) || y < Math.max(0, klip.y0) || x >= Math.min(z.Breite, klip.x1) || y >= Math.min(z.Hoehe, klip.y1)) return;
+    const i = y * z.Breite + x, d = z.Pixel[i];
+    const r = Math.min(255, ((d >>> 16) & 255) + div(((c >>> 16) & 255) * a, 255));
+    const g = Math.min(255, ((d >>> 8) & 255) + div(((c >>> 8) & 255) * a, 255));
+    const b = Math.min(255, (d & 255) + div((c & 255) * a, 255));
+    z.Pixel[i] = (0xFF000000 | (r << 16) | (g << 8) | b) >>> 0;
+  }
+  // Ausschnitt eines Bildes um die Mitte (mx, my) mit Maßstab skx/sky, echter Halbtransparenz, weiß überblendet und mit Deckung
+  function skaliert(z, q, sx, sy, sb, sh, mx, my, skx = 1, sky = 1, weiss = 0, deck = 255) {
+    const hb = sb * skx / 2, hh = sh * sky / 2;
+    if (hb < 0.5 || hh < 0.5 || deck <= 0) return;
+    const lx = mx - hb, oy = my - hh;
+    const x0 = Math.max(0, klip.x0, Math.floor(lx)), x1 = Math.min(z.Breite, klip.x1, Math.ceil(mx + hb));
+    const y0 = Math.max(0, klip.y0, Math.floor(oy)), y1 = Math.min(z.Hoehe, klip.y1, Math.ceil(my + hh));
+    for (let y = y0; y < y1; y++) {
+      const qy = Math.floor((y + 0.5 - oy) / sky);
+      if (qy < 0 || qy >= sh) continue;
+      for (let x = x0; x < x1; x++) {
+        const qx = Math.floor((x + 0.5 - lx) / skx);
+        if (qx < 0 || qx >= sb) continue;
+        let p = q.Pixel[(sy + qy) * q.Breite + sx + qx];
+        const a = div((p >>> 24) * deck, 255);
+        if (a === 0) continue;
+        if (weiss > 0) p = mischen(p, 0xFFFFFFFF, weiss | 0);
+        const i = y * z.Breite + x;
+        z.Pixel[i] = a >= 255 ? (p | 0xFF000000) >>> 0 : mischen(z.Pixel[i], p, a);
+      }
+    }
+  }
+  const glatt = (t) => t * t * (3 - 2 * t);
+  // Leuchtfarbe eines Sprites: Mittel der deckenden Pixel, aufgehellt
+  function leuchtfarbe(q, sx, sy, sb, sh) {
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let y = sy; y < sy + sh; y++) for (let x = sx; x < sx + sb; x++) {
+      const p = q.Pixel[y * q.Breite + x];
+      if (p >>> 24 < 200) continue;
+      r += (p >>> 16) & 255; g += (p >>> 8) & 255; b += p & 255; n++;
+    }
+    if (n === 0) return F.Text;
+    const hell = (c) => Math.min(255, div(div(c, n) * 3, 2) + 40);
+    return (0xFF000000 | (hell(r) << 16) | (hell(g) << 8) | hell(b)) >>> 0;
+  }
+  // kleiner fester Zufall (mulberry32) für die Effekte
+  class Zufall {
+    constructor(s) { this.s = s >>> 0; }
+    zahl() { let t = (this.s = (this.s + 0x6D2B79F5) >>> 0); t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+    bis(a, b) { return b === undefined ? Math.floor(this.zahl() * a) : a + Math.floor(this.zahl() * (b - a)); }   // wie Random.Next
+  }
+  class Effekte {
+    constructor(startwert = 1) { this.funken = []; this.ringe = []; this.zufall = new Zufall(startwert); this.Wackeln = 0; this.Blitz = 0; }
+    get aktiv() { return this.funken.length > 0 || this.ringe.length > 0 || this.Wackeln > 0 || this.Blitz > 0; }
+    leeren() { this.funken = []; this.ringe = []; this.Wackeln = this.Blitz = 0; }
+    zerspringen(x, y, farbe, splitter = 16, sterne = 3, kraft = 1, schwere = 0.12) {
+      const Z = this.zufall;
+      for (let i = 0; i < splitter; i++) {
+        const w = Z.zahl() * Math.PI * 2, v = (1 + Z.zahl() * 3) * kraft, leben = 22 + Z.bis(18);
+        this.funken.push({ X: x + Math.cos(w) * 5, Y: y + Math.sin(w) * 5, VX: Math.cos(w) * v, VY: Math.sin(w) * v - 1.2 * kraft, Leben: leben, Voll: leben, Farbe: farbe, Schwere: schwere, Stern: false });
+      }
+      for (let i = 0; i < sterne; i++) {
+        const w = Z.zahl() * Math.PI * 2, v = 0.4 + Z.zahl();
+        this.funken.push({ X: x, Y: y, VX: Math.cos(w) * v, VY: Math.sin(w) * v - 0.6, Leben: 26, Voll: 26, Farbe: 0xFFFFFFFF, Stern: true, Schwere: 0.03 });
+      }
+    }
+    funke(x, y, vx, vy, farbe, leben = 20, schwere = 0.12) { this.funken.push({ X: x, Y: y, VX: vx, VY: vy, Leben: leben, Voll: leben, Farbe: farbe, Schwere: schwere, Stern: false }); }
+    stern(x, y, farbe = 0xFFFFFFFF, leben = 18) { this.funken.push({ X: x, Y: y, VX: 0, VY: 0, Leben: leben, Voll: leben, Farbe: farbe, Schwere: 0, Stern: true }); }
+    lichtring(x, y, farbe, bis = 32, leben = 18) { this.ringe.push({ X: x, Y: y, Bis: bis, Leben: leben, Voll: leben, Farbe: farbe }); }
+    schritt() {
+      for (let i = this.funken.length - 1; i >= 0; i--) {
+        const f = this.funken[i];
+        f.X += f.VX; f.Y += f.VY; f.VY += f.Schwere; f.VX *= 0.98;
+        if (--f.Leben <= 0) this.funken.splice(i, 1);
+      }
+      for (let i = this.ringe.length - 1; i >= 0; i--) if (--this.ringe[i].Leben <= 0) this.ringe.splice(i, 1);
+      if (this.Wackeln > 0) this.Wackeln--;
+      if (this.Blitz > 0) this.Blitz--;
+    }
+    // Verschiebung fürs Wackeln (jedes Bild neu)
+    versatz() {
+      if (this.Wackeln <= 0) return [0, 0];
+      const w = div(this.Wackeln + 2, 3);
+      return [this.zufall.bis(-w, w + 1), this.zufall.bis(-w, w + 1)];
+    }
+    blitzZeichnen(z, x, y, b, h) { if (this.Blitz > 0) schleier(z, x, y, b, h, 0xFFFFFFFF, Math.min(60, this.Blitz * 6)); }
+    zeichnen(z, dx = 0, dy = 0) {
+      for (const r of this.ringe) {
+        const f = 1 - r.Leben / r.Voll, rad = 6 + f * (r.Bis - 6), a = (220 * (1 - f)) | 0, n = (rad * 4) | 0;
+        for (let i = 0; i < n; i++) { const w = i * Math.PI * 2 / n; leuchten(z, r.X + dx + Math.cos(w) * rad, r.Y + dy + Math.sin(w) * rad, r.Farbe, a); }
+      }
+      for (const f of this.funken) {
+        const a = div(255 * f.Leben, f.Voll), x = (f.X + dx) | 0, y = (f.Y + dy) | 0;
+        if (f.Stern) {
+          const l = div(f.Leben * 4, f.Voll) + 1;
+          for (let i = -l; i <= l; i++) {
+            const ai = div(a * (l + 1 - Math.abs(i)), l + 1);
+            leuchten(z, x + i, y, f.Farbe, ai);
+            if (i !== 0) leuchten(z, x, y + i, f.Farbe, ai);
+          }
+        } else {
+          const g = div(f.Leben * 3, f.Voll);
+          leuchten(z, x, y, f.Farbe, 255);
+          if (g >= 1) { leuchten(z, x + 1, y, f.Farbe, a); leuchten(z, x, y + 1, f.Farbe, a); leuchten(z, x + 1, y + 1, f.Farbe, div(a * 2, 3)); }
+          if (g >= 2) { leuchten(z, x - 1, y, f.Farbe, div(a, 2)); leuchten(z, x, y - 1, f.Farbe, div(a, 2)); leuchten(z, x + 2, y, f.Farbe, div(a, 3)); leuchten(z, x, y + 2, f.Farbe, div(a, 3)); }
+        }
+      }
+    }
+  }
+  return {
+    F, text, mitte, rechts, breite, gross, tafel, bild, kopieren, hintergrund, schleier, rechteck, mischen, Eingabe,
+    klip, klippen, klippenAus, leuchten, skaliert, glatt, leuchtfarbe, Zufall, Effekte,
+  };
+})();
+if (typeof module !== "undefined") module.exports = BRRetro;
+</script>
+<script>// Das Spielfeld des Remasters aus eigener Sicht, wenn „Animationen“ an ist: dieselbe Übertragung wie ..\classic\Feldbild.cs.
+// Die Logik rechnet weiter im 25-Hz-Raster (Game.drawGame in ein unsichtbares Bild); dieses Bild schaut ihr nur zu: Es
+// verfolgt Spielfigur, Babys und Monster über ihre Referenz, merkt sich die Lage vor und nach jedem Logikschritt und
+// zeichnet mit 60 Bildern/s dazwischen (gleiten; der Ausschnitt folgt der Figur). Boden, Wände, Ziele und Boni aus
+// Level.levelMap, Figuren aus ihren Bildern. Effekte: Schatten, schwebende Babys, atmende Monster, leuchtende Ziele,
+// funkelnde Boni; Rettung (Lichtring, Sterne, Leuchtspur, „+10“), Verlust (Splitter, Wackeln, Blitz), Bonus (Funkeln,
+// „+150“), Levelbeginn (Blende um die Figur, Figuren blenden auf, „Level n“), Levelende (Jubel oder roter Blitz).
+// Eigener Zufall; Spielzufall und Spielzustand werden nur gelesen.
+"use strict";
+var BRFeldbild = (function () {
+  const { Tb, Game, Level, div } = BR;
+  const { F, text, breite, schleier, rechteck, mischen, klip, klippen, klippenAus, leuchten, skaliert, glatt, leuchtfarbe, Zufall, Effekte } = BRRetro;
+  const B = 240, H = 320, R = 32, IRIS = 30, LABEL = 80, GRUND = 0xFF000000, OUT = -999999999, SCION = 1, ABSORBER = 2;
+  const fl = (a, b) => Math.floor(a / b);
+  const imLevel = (cx, cy) => cx >= 0 && cy >= 0 && cx < Level.tiles_w && cy < Level.tiles_h;
+
+  function blit(z, q, sx, sy, sb, sh, dx, dy) {
+    const x0 = Math.max(dx, klip.x0, 0), y0 = Math.max(dy, klip.y0, 0), x1 = Math.min(dx + sb, klip.x1, z.Breite), y1 = Math.min(dy + sh, klip.y1, z.Hoehe);
+    for (let y = y0; y < y1; y++) {
+      const qz = (sy + y - dy) * q.Breite + sx - dx, zz = y * z.Breite;
+      for (let x = x0; x < x1; x++) {
+        const p = q.Pixel[qz + x], a = p >>> 24;
+        if (a === 255) z.Pixel[zz + x] = p; else if (a !== 0) z.Pixel[zz + x] = mischen(z.Pixel[zz + x], p, a);
+      }
+    }
+  }
+  function schatten(z, cx, cy, rx, ry, a) {
+    const x0 = Math.max((cx - rx | 0) - 1, klip.x0, 0), x1 = Math.min((cx + rx | 0) + 2, klip.x1, z.Breite);
+    const y0 = Math.max((cy - ry | 0) - 1, klip.y0, 0), y1 = Math.min((cy + ry | 0) + 2, klip.y1, z.Hoehe);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+      if (d >= 1) continue;
+      const i = y * z.Breite + x;
+      z.Pixel[i] = mischen(z.Pixel[i], 0xFF000000, (a * (1 - d)) | 0);
+    }
+  }
+  function schein(z, cx, cy, c, a, r) {
+    if (a <= 0) return;
+    const x0 = Math.round(cx), y0 = Math.round(cy);
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > r + 0.3) continue;
+      leuchten(z, x0 + dx, y0 + dy, c, a * (1 - d / (r + 1)));
+    }
+  }
+
+  class Feldbild {
+    constructor() {
+      this.vfx = new Effekte(5); this.alpha = 1; this.uhr = 0;
+      // Zähler für Bilder und Dauerlauf
+      this.Starts = 0; this.Rettungen = 0; this.Gerettet = 0; this.Verluste = 0; this.Doppelt = 0; this.Funkeln = 0; this.Fehler = 0;
+      this.TextAusserhalb = 0; this.PunkteGezeigt = 0; this.GroessterSprung = 0; this.LetzterFehler = "";
+      this.spuren = new Map(); this.liste = []; this.schriften = []; this.zufall = new Zufall(9);
+      this.bonus = []; this.figur0 = null; this.punkte0 = 0; this.gerettet0 = 0; this.start = 999; this.jubel = 0; this.trauer = 0;
+      this.kx = 0; this.ky = 0; this.levelSchild = null;
+      const breiten = [18, 15, 11, 32, div(Tb.img[Tb.explosionPNG].Breite, 4), 32];
+      this.glanz = Tb.img.map((q, i) => leuchtfarbe(q, 0, 0, breiten[i], q.Hoehe));
+      this.glanzZiel = leuchtfarbe(Tb.img[Tb.tilesPNG], Level.GOAL * R, 0, R, R);
+      this.glanzBonus = leuchtfarbe(Tb.img[Tb.bonusPNG], 0, 0, R, R);
+    }
+
+    // ---------------------------------------------------------------- Beobachten (nach jedem Logikschritt)
+    beobachten() {
+      const a = Game.actor;
+      if (!a || !Level.levelMap) return;
+      if (a !== this.figur0) { this.zuruecksetzen(); return; }
+      const neu = { gerettet: 0 };
+      this.folgen(a, neu);
+      if (Game.scion) for (const s of Game.scion) this.folgen(s, neu);
+      if (Game.absorber) for (const s of Game.absorber) this.folgen(s, neu);
+      let neuBonus = 0;
+      for (let y = 0; y < Level.tiles_h; y++) for (let x = 0; x < Level.tiles_w; x++) {
+        const i = y * Level.tiles_w + x;
+        if (!this.bonus[i] || Level.levelMap[y][x] === Level.BONUS_ITEM) continue;
+        this.bonus[i] = false; neuBonus++;
+        this.bonusFunkeln(x * R + R / 2, y * R + R / 2);
+      }
+      const dg = Game.scionsSaved - this.gerettet0;
+      if (dg !== neu.gerettet) this.melden("gerettet +" + dg + ", aber " + neu.gerettet + " heimgeflogen");
+      const d = a.score - this.punkte0, erwartet = 150 * neuBonus + 10 * dg;
+      if (d !== erwartet) this.melden("Punkte +" + d + " statt +" + erwartet);
+      this.PunkteGezeigt += d;
+      this.punkte0 = a.score; this.gerettet0 = Game.scionsSaved;
+    }
+    // neue Runde (Game.init): alles neu aufnehmen, die Blende öffnet sich um die Figur
+    zuruecksetzen() {
+      this.spuren.clear(); this.liste = []; this.schriften = []; this.vfx.leeren();
+      this.jubel = this.trauer = 0; this.figur0 = Game.actor; this.start = 0; this.Starts++;
+      let nr = 0;
+      const neu = (s) => {
+        const sp = { S: s, Nr: nr++, X0: s.x, Y0: s.y, X1: s.x, Y1: s.y, Aus: s.x === OUT, Hit: s.hit, Rettung: !!s.rescueAnimation, RX: 0, RY: 0, RT: 0, Gesprungen: true, ZX: 0, ZY: 0 };
+        this.spuren.set(s, sp); this.liste.push(sp);
+      };
+      neu(this.figur0);
+      if (Game.scion) Game.scion.forEach(neu);
+      if (Game.absorber) Game.absorber.forEach(neu);
+      this.standUebernehmen();
+      const f = this.figur0, mx = f.x + f.w / 2, my = f.y + f.h / 2, Z = this.zufall;
+      this.kx = f.x - (B / 2 - div(f.w, 2)); this.ky = f.y - (H / 2 - div(f.h, 2));
+      this.vfx.lichtring(mx, my, this.glanz[Tb.actorPNG], 30, 24); this.vfx.lichtring(mx, my, 0xFFFFFFFF, 16, 14);
+      for (let i = 0; i < 5; i++) this.vfx.stern(mx + Z.bis(-14, 15), my + Z.bis(-16, 17), 0xFFFFFFFF, 14 + Z.bis(12));
+      const t = "Level " + Game.Levelnr, s = BR.Image.createImage(breite(t, 3) + 3, 24);
+      s.Pixel.fill(0); text(s, t, 0, 0, F.Gold, 3, F.Schatten); this.levelSchild = s;
+    }
+    // Bonusfelder, Punkte und Gerettete ohne Effekt übernehmen
+    standUebernehmen() {
+      this.bonus = [];
+      for (let y = 0; y < Level.tiles_h; y++) for (let x = 0; x < Level.tiles_w; x++) this.bonus.push(Level.levelMap[y][x] === Level.BONUS_ITEM);
+      this.punkte0 = Game.actor ? Game.actor.score : 0; this.gerettet0 = Game.scionsSaved;
+    }
+    // von außen versetzte Sprites (Bilder) ohne Effekt übernehmen
+    versetzen() {
+      for (const sp of this.liste) {
+        const s = sp.S;
+        sp.X0 = sp.X1 = s.x; sp.Y0 = sp.Y1 = s.y; sp.Aus = s.x === OUT; sp.Hit = s.hit; sp.Gesprungen = true;
+        if (s.type === SCION) sp.Rettung = s.rescueAnimation;
+      }
+      this.standUebernehmen();
+    }
+    // ohne Animationen wird nicht gezeichnet: beim nächsten Zeichnen nichts als Sprung prüfen
+    nichtGezeichnet() { for (const sp of this.liste) sp.Gesprungen = true; }
+
+    folgen(s, neu) {
+      const sp = this.spuren.get(s);
+      if (!sp) return;
+      const aus = s.x === OUT, warAus = sp.Aus, dx = s.x - sp.X1, dy = s.y - sp.Y1, sc = s.type === SCION;
+      const rettung = sc && s.rescueAnimation, grenze = rettung ? s.speed + 1 : s.speed;
+      const sprung = aus || warAus || Math.abs(dx) > grenze || Math.abs(dy) > grenze;
+      if (sprung && !aus && !warAus) this.melden("Sprung " + dx + "/" + dy + " bei Typ " + s.type);
+      const mx = s.x + s.w / 2, my = s.y + s.h / 2, V = this.vfx, Z = this.zufall;
+      if (sc && !aus) {
+        if (rettung && !sp.Rettung) {
+          sp.Rettung = true; sp.RT = 0; sp.RX = mx | 0; sp.RY = my | 0; this.Rettungen++;
+          if (s.hit && !sp.Hit) this.Doppelt++;
+          this.zeigen(mx, my - 12, "+10", F.Gold, 1);   // gleich beim Erreichen des Ziels, gutgeschrieben wird später wie im Original
+          V.lichtring(mx, my, this.glanzZiel, 30, 22); V.lichtring(mx, my, 0xFFFFFFFF, 14, 12);
+          for (let i = 0; i < 4; i++) V.stern(mx + Z.bis(-10, 11), my + Z.bis(-10, 11), 0xFFFFF4C0, 14 + Z.bis(10));
+        } else if (!rettung && s.hit && !sp.Hit) {
+          this.Verluste++;
+          V.zerspringen(mx, my, this.glanz[Tb.scionPNG], 18, 3, 0.9, 0.02); V.zerspringen(mx, my, F.Rot, 8, 0, 0.7, 0.02);
+          V.lichtring(mx, my, F.Rot, 22, 16);
+          if (this.imBild(mx, my)) { V.Wackeln = Math.max(V.Wackeln, 9); V.Blitz = Math.max(V.Blitz, 5); }
+        }
+      }
+      if (sc && aus && !warAus) {
+        if (sp.Rettung) {
+          this.Gerettet++; neu.gerettet++;
+          V.stern(sp.RX, sp.RY, 0xFFFFFFFF, 18); V.lichtring(sp.RX, sp.RY, this.glanzZiel, 18, 14);
+        }
+        sp.Rettung = false;
+      }
+      sp.X0 = sprung ? s.x : sp.X1; sp.Y0 = sprung ? s.y : sp.Y1;
+      sp.X1 = s.x; sp.Y1 = s.y; sp.Aus = aus; sp.Hit = s.hit;
+      if (sprung) sp.Gesprungen = true;
+    }
+    imBild(wx, wy) { return wx >= this.kx && wx < this.kx + B && wy >= this.ky && wy < this.ky + H; }
+    bonusFunkeln(x, y) {
+      const V = this.vfx, Z = this.zufall;
+      this.Funkeln++;
+      V.lichtring(x, y, this.glanzBonus, 28, 20); V.lichtring(x, y, 0xFFFFFFFF, 14, 12);
+      V.zerspringen(x, y, this.glanzBonus, 10, 0, 0.7, 0.01);
+      for (let i = 0; i < 7; i++) V.stern(x + Z.bis(-14, 15), y + Z.bis(-14, 15), i % 2 === 0 ? 0xFFFFFFFF : 0xFFFFE070, 12 + Z.bis(16));
+      this.zeigen(x, y - 14, "+150", F.Gold, 2);
+    }
+    // Levelende: Jubel (geschafft) oder roter Blitz mit Wackeln (verloren)
+    ende(gut) {
+      const a = Game.actor;
+      this.start = Math.max(this.start, LABEL);
+      if (gut) {
+        this.jubel = 100;
+        if (a) { const mx = a.x + a.w / 2, my = a.y + a.h / 2; this.vfx.lichtring(mx, my, F.Gold, 60, 30); this.vfx.lichtring(mx, my, 0xFFFFFFFF, 30, 20); }
+      } else {
+        this.trauer = 36; this.vfx.Wackeln = Math.max(this.vfx.Wackeln, 14); this.vfx.Blitz = Math.max(this.vfx.Blitz, 6);
+      }
+    }
+    zeigen(x, y, t, farbe, g) {
+      for (const s of this.schriften) if (Math.abs(s.X - x) < breite(t, g) && Math.abs(s.Y - y) < 9 * g) y = s.Y - 9 * Math.max(g, s.G);
+      this.schriften.push({ X: x, Y: y, Text: t, Farbe: farbe, G: g, Leben: 55, Voll: 55, Pop: 5 });
+    }
+    melden(s) { this.Fehler++; this.LetzterFehler = s; }
+
+    // ---------------------------------------------------------------- Schritt der Anzeige (60/s, nicht in der Pause)
+    schritt() {
+      const V = this.vfx, Z = this.zufall;
+      this.uhr++; V.schritt();
+      if (this.start < 1000) this.start++;
+      for (let i = this.schriften.length - 1; i >= 0; i--) {
+        const t = this.schriften[i];
+        t.Y -= 0.4; if (t.Pop > 0) t.Pop--;
+        if (--t.Leben <= 0) this.schriften.splice(i, 1);
+      }
+      if (this.trauer > 0) this.trauer--;
+      for (const sp of this.liste) {
+        if (!sp.Rettung || sp.Aus) continue;
+        sp.RT++;
+        const [x, y] = this.lage(sp), mx = x + sp.S.w / 2, my = y + sp.S.h / 2;
+        V.funke(mx + (Z.zahl() - 0.5) * 6, my + (Z.zahl() - 0.5) * 6, (Z.zahl() - 0.5) * 0.6, 0.3 + Z.zahl() * 0.5, Z.bis(3) === 0 ? 0xFFFFFFFF : this.glanzZiel, 16, 0);
+      }
+      if (this.uhr % 18 === 0 && Level.levelMap) {
+        const cx = fl(this.kx + Z.bis(B), R), cy = fl(this.ky + Z.bis(H), R);
+        if (imLevel(cx, cy) && Level.levelMap[cy][cx] === Level.BONUS_ITEM) V.stern(cx * R + 6 + Z.bis(20), cy * R + 6 + Z.bis(20), 0xFFFFF4C0, 16);
+      }
+      if (this.jubel > 0) {
+        this.jubel--;
+        if (this.jubel > 30) {
+          const farben = [F.Gold, F.Gruen, F.Blau, 0xFFFFFFFF, 0xFFFF8AD8];
+          for (let i = 0; i < 3; i++) V.funke(this.kx + Z.bis(B), this.ky + Z.bis(div(H, 3)), (Z.zahl() - 0.5) * 1.2, 0.4 + Z.zahl(), farben[Z.bis(farben.length)], 40 + Z.bis(20), 0.02);
+          if (this.jubel % 6 === 0) V.stern(this.kx + Z.bis(B), this.ky + Z.bis(H), 0xFFFFFFFF, 20);
+        }
+      }
+    }
+    lage(sp) { return [sp.X0 + (sp.X1 - sp.X0) * this.alpha, sp.Y0 + (sp.Y1 - sp.Y0) * this.alpha]; }
+
+    // ---------------------------------------------------------------- Zeichnen
+    zeichnen(z, fx, fy) {
+      klippen(fx, fy, fx + B, fy + H);
+      const a = Game.actor, asp = a && this.spuren.get(a);
+      if (!asp || !Level.levelMap) { rechteck(z, fx, fy, B, H, GRUND); klippenAus(); return; }
+      const [ax, ay] = this.lage(asp);
+      this.kx = Math.round(ax) - (B / 2 - div(a.w, 2)); this.ky = Math.round(ay) - (H / 2 - div(a.h, 2));
+      this.boden(z, fx, fy);
+      for (const sp of this.liste) this.figur(z, sp, fx, fy, true);
+      for (const sp of this.liste) if (sp.S.type === SCION) this.figur(z, sp, fx, fy, false);
+      for (const sp of this.liste) if (sp.S.type === ABSORBER) this.figur(z, sp, fx, fy, false);
+      this.figur(z, asp, fx, fy, false);
+      this.vfx.zeichnen(z, fx - this.kx, fy - this.ky);
+      for (const t of this.schriften) {
+        const g = t.G + (t.Pop > 0 ? 1 : 0), w = breite(t.Text, g) + g, h = 8 * g;
+        let l = (t.X | 0) - this.kx - div(w, 2), o = (t.Y | 0) - this.ky - 4 * g;
+        l = Math.min(Math.max(l, 2), B - 2 - w); o = Math.min(Math.max(o, 2), H - 2 - h);
+        if (l < 0 || l + w > B || o < 0 || o + h > H) this.TextAusserhalb++;
+        const aus = div(t.Voll, 3), al = t.Leben > aus ? 0 : 255 - div(t.Leben * 255, aus);
+        text(z, t.Text, fx + l, fy + o, mischen(t.Farbe, GRUND, al), g, F.Schatten);
+      }
+      if (this.trauer > 0) schleier(z, fx, fy, B, H, F.Rot, this.trauer * 3);
+      this.blende(z, fx, fy);
+      this.vfx.blitzZeichnen(z, fx, fy, B, H);
+      klippenAus();
+    }
+    // Boden (Kachel 0 überall, wie Level.drawBG), darauf Wände, Ziele (leuchten) und Boni (drehen sich)
+    boden(z, fx, fy) {
+      const k = Tb.img[Tb.tilesPNG], bonusBild = div(div(this.uhr * 25, 60), 4) % 4;
+      const c0 = fl(this.kx, R), c1 = fl(this.kx + B - 1, R), r0 = fl(this.ky, R), r1 = fl(this.ky + H - 1, R);
+      for (let cy = r0; cy <= r1; cy++) for (let cx = c0; cx <= c1; cx++) {
+        const x = fx + cx * R - this.kx, y = fy + cy * R - this.ky;
+        blit(z, k, 0, 0, R, R, x, y);
+        if (!imLevel(cx, cy)) continue;
+        const t = Level.levelMap[cy][cx];
+        if (t === Level.EMPTY) continue;
+        if (t === Level.BONUS_ITEM) {
+          schein(z, x + R / 2, y + R / 2, this.glanzBonus, 34 + ((18 * Math.sin(this.uhr * 0.1 + cx + cy)) | 0), 13);
+          blit(z, Tb.img[Tb.bonusPNG], bonusBild * R, 0, R, R, x, y);
+        } else {
+          blit(z, k, t * R, 0, R, R, x, y);
+          if (t === Level.GOAL) schein(z, x + R / 2, y + R / 2, this.glanzZiel, 46 + ((30 * Math.sin(this.uhr * 0.08 + cx * 0.7)) | 0), 17);
+        }
+      }
+    }
+    iris() { return 26 + 210 * glatt(Math.min(1, this.start / IRIS)); }
+    figur(z, sp, fx, fy, nurSchatten) {
+      const s = sp.S;
+      if (sp.Aus) return;
+      const [x, y] = this.lage(sp);
+      if (!nurSchatten) this.pruefen(sp, x, y);
+      const sx = Math.round(x) - this.kx, sy = Math.round(y) - this.ky;
+      if (sx + s.w + 12 < 0 || sx - 12 >= B || sy + s.h + 12 < 0 || sy - 12 >= H) return;
+      const mx = fx + sx + s.w / 2, my = fy + sy + s.h / 2;
+      let f = 1;
+      if (this.start < IRIS + 30) {
+        const d = Math.sqrt((mx - fx - B / 2) ** 2 + (my - fy - H / 2) ** 2);
+        f = Math.min(1, Math.max(0, (this.iris() - d) / 30));
+        if (f <= 0) return;
+      }
+      const e = glatt(f), explodiert = s.type === SCION && s.hit && !s.rescueAnimation;
+      if (nurSchatten) {
+        if (explodiert) return;
+        const rx = s.w * 0.45 * (sp.Rettung ? Math.max(0, 1 - sp.RT / 20) : 1);
+        if (rx > 0.5) schatten(z, mx, fy + sy + s.h - 1, rx * e, 2.4 * e, 80);
+        return;
+      }
+      const q = Tb.img[s.img], bild = Math.min(Math.max(s.frame, 0), s.frameAnz - 1);
+      if (s.type === 0) {
+        const t = glatt(Math.min(1, this.start / 14)), hop = this.jubel > 0 ? -Math.abs(Math.sin(this.jubel * 0.22)) * 6 : 0, sk = 1 + (1 - t) * 0.8;
+        skaliert(z, q, bild * s.w, 0, s.w, s.h, mx, my + hop, sk, sk, (255 * (1 - t)) | 0, (90 + 165 * t) | 0);
+        return;
+      }
+      if (s.type === SCION) {
+        if (explodiert) {
+          const ex = Tb.img[Tb.explosionPNG], ew = div(ex.Breite, 4), eb = Math.min(Math.max(s.eventFrame, 0), 3);
+          schein(z, mx, my, 0xFFFF8040, 70 - eb * 15, 10);
+          skaliert(z, ex, eb * ew, 0, ew, ex.Hoehe, mx, my, 1, 1, 0, (255 * e) | 0);
+          return;
+        }
+        if (sp.Rettung) {
+          const t = Math.min(1, sp.RT / 24);
+          schein(z, mx, my, this.glanzZiel, 90, 8);
+          skaliert(z, q, bild * s.w, 0, s.w, s.h, mx, my, 1 + t * 0.5, 1 + t * 0.5, (150 * t) | 0, 255);
+          return;
+        }
+        const hub = Math.sin((this.uhr + sp.Nr * 17) * 0.11) * 1.6;
+        skaliert(z, q, bild * s.w, 0, s.w, s.h, mx, my + hub - 1, e, e, (200 * (1 - e)) | 0, 255);
+        return;
+      }
+      const atem = Math.sin((this.uhr + sp.Nr * 23) * 0.16);
+      skaliert(z, q, bild * s.w, 0, s.w, s.h, mx, my + atem * 0.5, e * (1 + atem * 0.06), e * (1 - atem * 0.06), (200 * (1 - e)) | 0, 255);
+    }
+    // Levelbeginn: Blende öffnet sich um die Figur, „Level n“ blendet auf und wieder aus
+    blende(z, fx, fy) {
+      if (this.start < IRIS) {
+        const r = this.iris(), cx = fx + B / 2, cy = fy + H / 2;
+        for (let y = Math.max(fy, 0); y < Math.min(fy + H, z.Hoehe); y++) for (let x = Math.max(fx, 0); x < Math.min(fx + B, z.Breite); x++) {
+          const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2) - r;
+          if (d <= 0) continue;
+          const i = y * z.Breite + x;
+          z.Pixel[i] = mischen(z.Pixel[i], F.Nacht, Math.min(255, (d * 24) | 0));
+        }
+      }
+      const s = this.levelSchild, st = this.start;
+      if (st < LABEL && s) {
+        const deck = st < 8 ? div(st * 255, 8) : st > LABEL - 24 ? div((LABEL - st) * 255, 24) : 255;
+        const sk = st < 8 ? 1.6 - 0.6 * glatt(st / 8) : 1;
+        skaliert(z, s, 0, 0, s.Breite, s.Hoehe, fx + B / 2, fy + 52, sk, sk, 0, deck);
+      }
+    }
+    // Prüfung: zwischen zwei Bildern gleitet nichts weiter, als es in 25/60 Logikschritt darf
+    pruefen(sp, x, y) {
+      if (!sp.Gesprungen) {
+        const d = Math.max(Math.abs(x - sp.ZX), Math.abs(y - sp.ZY));
+        if (d > this.GroessterSprung && !sp.Rettung) this.GroessterSprung = d;
+        const v = sp.S.type === SCION && sp.S.rescueAnimation ? sp.S.speed + 1 : sp.S.speed;
+        if (d > v * 25 / 60 + 0.01) this.melden("gleitet " + d.toFixed(2) + " px in einem Bild bei Typ " + sp.S.type);
+      }
+      sp.ZX = x; sp.ZY = y; sp.Gesprungen = false;
+    }
+    get anzahlSchriften() { return this.schriften.length; }
+  }
+  return Feldbild;
+})();
+if (typeof module !== "undefined") module.exports = BRFeldbild;
+</script>
+<script>// Remaster-Oberfläche der HTML-Fassung, nur fürs Handy gebaut. Je nach Haltung eine eigene Anordnung (anpassen):
+//   hochkant: Bühne 240x360, Anzeige oben, darunter das 240x320-Spielfeld
+//   quer:     Bühne Bx320 (B > 240, aus dem Seitenverhältnis), Spielfeld in der Mitte, Anzeigen links und rechts daneben
+// Gleicher Ablauf wie ..\classic\Remaster.cs, nur anders angeordnet und zum Antippen:
+// Menüeinträge, ◀ ▶ in den Optionen und das Pausezeichen lassen sich direkt antippen.
+// Flüssig wie die Exe: schritt() kommt 60-mal je Sekunde, die Logik rechnet über einen Taktzähler genau 25 Schritte je
+// 60 Bilder. „Animationen“ (Optionen, gespeichert wie in der Exe unter „remaster-animationen“) an: feldbild.js zeichnet
+// das Feld selbst, gleitend und mit Effekten; aus: das Bild der Logik wie vor dem Umbau. Ein Tipp kürzer als ein
+// Logikschritt zählt für den nächsten Schritt.
+"use strict";
+var BRHandy = (function () {
+  const { div, Image, Tb, Game, Ac, Options, Speicher } = BR;
+  const { F, text, mitte, rechts, breite, tafel, bild, kopieren, hintergrund, schleier, rechteck, mischen, glatt, Eingabe } = BRRetro;
+  const ZEILE = 32, ANIM = "remaster-animationen";
+
+  function umbrechen(s, maxB, g = 1) {
+    const z = []; let a = "";
+    for (const w of s.split(" ")) { const t = a ? a + " " + w : w; if (a && breite(t, g) > maxB) { z.push(a); a = w; } else a = t; }
+    if (a) z.push(a);
+    return z;
+  }
+  const drin = (p, f) => p.x >= f.x && p.x < f.x + f.b && p.y >= f.y && p.y < f.y + f.h;
+
+  // Menü mit großen Zeilen (Schrift 2x) zum Antippen; schalter: Einträge mit zwei Werten (An/Aus), ohne ◀ ▶, Antippen schaltet
+  class Menue {
+    constructor(e) { this.Eintraege = e; this.Index = 0; this.Wert = null; this.felder = []; this.halten = 0; this.schalter = new Set(); }
+    zeichnen(z, x, y, b, zeit) {
+      this.felder = [];
+      this.Eintraege.forEach((s, i) => {
+        const y0 = y + i * ZEILE, an = i === this.Index, w = this.Wert ? this.Wert(i) : null;
+        if (an) { rechteck(z, x, y0, b, ZEILE - 4, F.Gold); rechteck(z, x, y0 + ZEILE - 5, b, 1, F.GoldDunkel); }
+        text(z, s, x + 22, y0 + 7, an ? F.Nacht : F.Text, 2, an ? 0 : F.Schatten);
+        let wm = 0;
+        // Wert rechts; wird es zum Eintrag hin zu eng (unter 12 Pixel Abstand), ohne Leerzeichen um die Pfeile
+        if (w !== null) {
+          let t = this.schalter.has(i) ? w : "◀ " + w + " ▶";
+          if (!this.schalter.has(i) && breite(s, 2) + breite(t, 2) + 42 > b) t = "◀" + w + "▶";
+          const tb = breite(t, 2); text(z, t, x + b - 8 - tb, y0 + 7, an ? F.Nacht : F.Gold, 2, an ? 0 : F.Schatten); wm = x + b - 8 - div(tb, 2);
+        }
+        if (an) bild(z, Tb.img[Tb.scionPNG], (div(zeit, 6) % 2) * 11, 0, 11, 11, x + 5, y0 + 8 - (div(zeit, 4) % 2), 1);
+        this.felder.push({ x, y: y0, b, h: ZEILE - 4, i, wm, mitte: x + div(b, 2) });
+      });
+    }
+    // tipps: in diesem Bild angetippte Punkte; halten: Punkt, der gerade gedrückt ist (für Wiederholen von ◀ ▶);
+    // wiederholt nach 0,4 s alle 80 ms (Bilder der Anzeige: verzug, wdh)
+    bedienen(e, tipps, halten, aendern, verzug = 24, wdh = 5) {
+      const n = this.Eintraege.length;
+      if (e.HochSchritt) this.Index = (this.Index + n - 1) % n;
+      if (e.RunterSchritt) this.Index = (this.Index + 1) % n;
+      const wert = (i) => aendern && this.Wert && this.Wert(i) !== null;
+      if (wert(this.Index)) { if (e.LinksSchritt) aendern(this.Index, -1); if (e.RechtsSchritt) aendern(this.Index, 1); }
+      let w = e.OkNeu ? this.Index : -1;
+      for (const p of tipps) for (const f of this.felder) if (drin(p, f)) {
+        this.Index = f.i;
+        if (!wert(f.i)) w = f.i;
+        else if (this.schalter.has(f.i)) aendern(f.i, 1);
+        else if (p.x >= f.mitte) aendern(f.i, p.x < f.wm ? -1 : 1);
+      }
+      // gehaltenes ◀ ▶ wiederholt wie eine gehaltene Taste
+      const f = halten && this.felder.find((f) => drin(halten, f) && wert(f.i) && !this.schalter.has(f.i) && halten.x >= f.mitte);
+      if (f) { this.halten++; if (this.halten > verzug && (this.halten - verzug) % wdh === 0) aendern(f.i, halten.x < f.wm ? -1 : 1); } else this.halten = 0;
+      return w;
+    }
+  }
+
+  class Handy {
+    constructor(o = {}) {
+      this.anpassen(o.B || 240, o.H || 360); this.feld = Image.createImage(240, 320);
+      this.klassisch = o.klassisch || (() => { });
+      this.seite = o.seite || (() => "links"); this.seiteSetzen = o.seiteSetzen || (() => { });
+      // uhr: Bilder der Anzeige (60/s); zeit/schirmZeit: Handy-Bilder (25/s) für Blinken, Menüzeiger und Wartezeiten
+      this.e = new Eingabe(1000 / 60); this.schirm = "Titel"; this.uhr = 0; this.schirmUhr = 0; this.zeit = 0; this.schirmZeit = 0;
+      this.einblenden = 30; this.einblendenVoll = 15;
+      this.tipps = []; this.halten = null;
+      // Takt: takt zählt immer (Menüs), spielTakt nur im Spiel (in der Pause steht er)
+      this.takt = 0; this.spielTakt = 0; this.tick = false; this.tipp = {};
+      this.dankeT = 0; this.dankeEin = 0; this.punkteAnzeige = 0; this.balkenG = 0; this.balkenU = 0;
+      this.spielBilder = 0; this.logikSchritte = 0; this.spielAusnahmen = 0;
+      Tb.w = 240; Tb.h = 320; Tb.preloader();
+      this.anim = !Speicher.da(ANIM) || Speicher.lesen(ANIM) !== 0;
+      this.bild = new BRFeldbild();
+      this.haupt = new Menue(["Neues Spiel", "Optionen", "Anleitung", "Klassisch"]);
+      this.optionen = new Menue(["Babys", "Monster", "Level", "Stick", "Animationen", "Zurück"]);
+      this.optionen.Wert = (i) => i === 0 ? "" + Game.SCIONS_ANZ : i === 1 ? "" + Game.ABSORBER_ANZ : i === 2 ? Game.Levelnr + " / " + Game.LEVEL_ANZ
+        : i === 3 ? (this.seite() === "rechts" ? "Rechts" : "Links") : i === 4 ? (this.anim ? "An" : "Aus") : null;
+      this.optionen.schalter.add(4);
+      this.pause = new Menue(["Weiter", "Hauptmenü"]); this.ende = new Menue(["Nochmal", "Hauptmenü"]);
+    }
+    // Schalter „Animationen“: aus = Bild der Logik, ohne Gleiten und Effekte; die Logik ist in beiden Stellungen dieselbe
+    animationenUmschalten() { this.anim = !this.anim; Speicher.schreiben(ANIM, this.anim ? 1 : 0); }
+    // Bühne für hochkant (240x360) oder quer (Bx320); FX/FY: wo das Spielfeld liegt, M: Mitte, oy: Verschiebung der Menüs
+    anpassen(B, H) {
+      if (this.buehne && this.B === B && this.H === H) return;
+      this.B = B; this.H = H; this.quer = B > 240; this.buehne = Image.createImage(B, H);
+      this.FX = this.quer ? div(B - 240, 2) : 0; this.FY = this.quer ? 0 : 40; this.M = div(B, 2); this.oy = div(H - 360, 2);
+    }
+    get weiter() { return this.e.IrgendeineNeu || this.tipps.length > 0; }
+    wechseln(s) { this.schirm = s; this.schirmUhr = 0; this.schirmZeit = 0; this.einblenden = this.einblendenVoll = 15; }
+    schritt(tasten, tipps = [], halten = null) {
+      this.uhr++; this.schirmUhr++;
+      this.takt += 25; this.tick = this.takt >= 60;
+      if (this.tick) { this.takt -= 60; this.zeit++; this.schirmZeit++; }
+      this.e.lesen(tasten); this.tipps = tipps; this.halten = halten;
+      if (this.tick && this.schirm !== "Spiel" && this.schirm !== "Pause") Tb.pumpTimer();   // wie Game.Update in jedem Handy-Bild
+      this[this.schirm]();
+      if (this.einblenden > 0) { schleier(this.buehne, 0, 0, this.B, this.H, 0xFF000000, Math.min(255, div(this.einblenden * 240, this.einblendenVoll))); this.einblenden--; }
+    }
+    grund() { hintergrund(this.buehne, Tb.img[Tb.tilesPNG], this.zeit); }
+    logo(y, g) {
+      const t = "Babys retten", x = this.M - div(breite(t, g), 2), z = this.buehne;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) text(z, t, x + dx * (div(g, 2) + 1), y + dy * (div(g, 2) + 1), F.Schatten, g);
+      text(z, t, x, y + g, F.GoldDunkel, g); text(z, t, x, y, F.Gold, g);
+    }
+    // Spielfigur mit Babys im Schlepptau, ein Monster hinterher (mit Animationen gleitend und schwebend)
+    umzug(y) {
+      const z = this.buehne, t = this.anim ? this.uhr * 25 / 60 : this.zeit, x = ((t * 2) | 0) % (this.B + 260) - 120;
+      bild(z, Tb.img[Tb.actorPNG], (12 + div(this.zeit, 3) % 4) * 18, 0, 18, 23, x, y, 2);
+      for (let i = 0; i < 4; i++) {
+        const hub = this.anim ? Math.round(Math.sin(this.uhr * 0.11 + i * 1.3) * 2) + 1 : ((div(this.zeit, 4) + i) % 2) * 2;
+        bild(z, Tb.img[Tb.scionPNG], ((div(this.zeit, 3) + i) % 2) * 11, 0, 11, 11, x - 30 - i * 26, y + 24 - hub, 2);
+      }
+      bild(z, Tb.img[Tb.absorberPNG], 45, 0, 15, 15, x - 170, y + 16, 2);
+    }
+    Titel() {
+      const oy = this.oy;
+      this.grund(); this.logo(80 + oy, this.quer ? 4 : 3);
+      if (Ac.jana) mitte(this.buehne, "Für Jana", this.M, 122 + oy, F.Blau, 2);
+      else mitte(this.buehne, "Ein Handyspiel von Thomas · 2010", this.M, 124 + oy, F.Text);
+      this.umzug(186 + oy);
+      if (div(this.zeit, 15) % 2 === 0) mitte(this.buehne, "Antippen", this.M, 290 + oy, F.Text, 2);
+      if (this.weiter && this.schirmZeit > 5) this.wechseln("Menue");
+    }
+    Menue() {
+      const oy = this.oy;
+      this.grund(); this.logo(36 + oy, 3);
+      tafel(this.buehne, this.M - 104, 82 + oy, 208, 4 * ZEILE + 12); this.haupt.zeichnen(this.buehne, this.M - 98, 88 + oy, 196, this.zeit);
+      this.umzug(262 + oy);
+      const w = this.haupt.bedienen(this.e, this.tipps, this.halten);
+      if (this.e.ZurueckNeu) this.wechseln("Titel");
+      else if (w === 0) this.wechseln("Intro");
+      else if (w === 1) { this.optionen.Index = 0; this.wechseln("Optionen"); }
+      else if (w === 2) this.wechseln("Anleitung");
+      else if (w === 3) this.klassisch();
+    }
+    Optionen() {
+      const oy = this.quer ? -26 : 0;
+      this.grund(); mitte(this.buehne, "Optionen", this.M, 36 + oy, F.Gold, 3);
+      tafel(this.buehne, this.M - 112, 82 + oy, 224, 6 * ZEILE + 12); this.optionen.zeichnen(this.buehne, this.M - 106, 88 + oy, 212, this.zeit);
+      const w = this.optionen.bedienen(this.e, this.tipps, this.halten, (i, r) => {
+        if (i === 0) Game.SCIONS_ANZ = Math.min(200, Math.max(1, Game.SCIONS_ANZ + r));
+        if (i === 1) Game.ABSORBER_ANZ = Math.min(200, Math.max(1, Game.ABSORBER_ANZ + r));
+        if (i === 2) { Game.Levelnr += r; if (Game.Levelnr > Game.LEVEL_ANZ) Game.Levelnr = 1; if (Game.Levelnr < 1) Game.Levelnr = Game.LEVEL_ANZ; }
+        if (i === 3) this.seiteSetzen(this.seite() === "rechts" ? "links" : "rechts");
+        if (i === 4) this.animationenUmschalten();
+      });
+      if (w === 4) this.animationenUmschalten();
+      if (this.e.ZurueckNeu || w === 5) { Options.Save(); this.haupt.Index = 1; this.wechseln("Menue"); }
+    }
+    zeile(y, b, sx, sbr, sh, titel, t) {
+      const g = sbr > 20 ? 1 : 2, z = this.buehne;
+      bild(z, Tb.img[b], sx, 0, sbr, sh, this.M - 90 - div(sbr * g, 2), y + 24 - div(sh * g, 2), g);
+      text(z, titel, this.M - 64, y + 6, F.Gold, 1, F.Schatten);
+      umbrechen(t, 170).forEach((s, i) => text(z, s, this.M - 64, y + 18 + i * 11, F.Text, 1, F.Schatten));
+    }
+    Anleitung() {
+      const q = this.quer, y0 = q ? 36 : 52;
+      this.grund(); mitte(this.buehne, "So geht's", this.M, q ? 6 : 14, F.Gold, 3); tafel(this.buehne, this.M - 114, q ? 32 : 46, 228, q ? 284 : 294);
+      this.zeile(y0, Tb.actorPNG, 18, 18, 23, "Du", "Lauf mit dem Steuerstick durch die Level.");
+      this.zeile(y0 + 56, Tb.scionPNG, 0, 11, 11, "Marsbabys", "Sieht dich ein Baby, folgt es dir.");
+      this.zeile(y0 + 112, Tb.absorberPNG, 0, 15, 15, "Monster", "Berührt ein Monster ein Baby, ist es verloren.");
+      this.zeile(y0 + 168, Tb.tilesPNG, 160, 32, 32, "Ziel", "Hier fliegen die Babys sicher nach Hause.");
+      this.zeile(y0 + 224, Tb.bonusPNG, 0, 32, 32, "Bonus", "150 Punkte, jedes gerettete Baby 10.");
+      if ((this.weiter || this.e.ZurueckNeu) && this.schirmZeit > 4) { this.haupt.Index = 2; this.wechseln("Menue"); }
+    }
+    Intro() {
+      const oy = this.oy, M = this.M;
+      this.grund(); tafel(this.buehne, M - 108, 104 + oy, 216, 160);
+      mitte(this.buehne, "Level " + Game.Levelnr, M, 122 + oy, F.Gold, 4);
+      umbrechen(Ac.jana ? "Jana, rette die Marsbabys!" : "Rette die Marsbabys!", 200, 2).forEach((s, i) => mitte(this.buehne, s, M, 166 + oy + i * 20, F.Text, 2));
+      mitte(this.buehne, Game.SCIONS_ANZ + " Babys · " + Game.ABSORBER_ANZ + " Monster", M, 216 + oy, F.Blau);
+      if (div(this.zeit, 15) % 2 === 0) mitte(this.buehne, "Antippen", M, 240 + oy, F.Blass);
+      if (this.weiter && this.schirmZeit > 5) { Game.init(); Game.GAMESTATE[0] = Game.PLAY; this.spielStarten(); }
+    }
+    // neue Runde (nach init): Takt von vorn, keine alten Tipps; das Feldbild öffnet die Blende um die Figur
+    spielStarten() {
+      this.spielTakt = 0; this.tipp = {}; this.dankeT = 0; this.punkteAnzeige = 0; this.balkenG = 0; this.balkenU = 240;
+      this.bild.alpha = 0; this.bild.beobachten();
+      this.wechseln("Spiel");
+      if (this.anim) this.einblenden = 0;
+    }
+    Spiel() {
+      // Pause: Taste oder Antippen der Anzeige mit dem Pausezeichen (hochkant oben, quer oben rechts)
+      const pz = (p) => this.quer ? p.x >= this.FX + 240 && p.y < 64 : p.y < this.FY;
+      if (this.e.PauseNeu || this.tipps.some(pz)) { this.pause.Index = 0; this.wechseln("Pause"); this.spielbild(); return; }
+      // gehaltene Richtungen; ein kurzer Tipp zwischen zwei Logikschritten zählt für den nächsten Schritt
+      const e = this.e, t = this.tipp;
+      t.h = t.h || e.Hoch; t.r = t.r || e.Runter; t.l = t.l || e.Links; t.re = t.re || e.Rechts; t.ok = t.ok || e.Ok;
+      Ac.up = t.h; Ac.down = t.r; Ac.left = t.l; Ac.right = t.re; Ac.fire = t.ok;
+      this.spielBilder++; this.spielTakt += 25;
+      if (this.spielTakt >= 60) {
+        this.spielTakt -= 60; this.logikSchritte++;
+        try { Game.drawGame(this.feld.getGraphics()); } catch (x) { this.spielAusnahmen++; }
+        this.bild.beobachten();
+        this.tipp = {};
+        Ac.up = e.Hoch; Ac.down = e.Runter; Ac.left = e.Links; Ac.right = e.Rechts; Ac.fire = e.Ok;
+      }
+      if (Ac.dankeZeit > 0) { if (this.dankeT === 0) this.dankeEin = 0; this.dankeT = div(Ac.dankeZeit * 60, 25); Ac.dankeZeit = 0; }
+      else if (this.dankeT > 0) this.dankeT--;
+      this.dankeEin++;
+      this.bild.alpha = this.spielTakt / 60; this.bild.schritt();
+      if (Game.GAMESTATE[0] === Game.GAME_OVER) { this.ende.Index = 0; this.bild.ende(false); this.wechseln("Verloren"); if (this.anim) this.einblenden = 0; }
+      else if (Game.GAMESTATE[0] === Game.FINISHED) { this.ende.Index = 0; this.bild.ende(true); this.wechseln("Geschafft"); if (this.anim) this.einblenden = 0; }
+      this.spielbild();
+    }
+    spielbild() {
+      const z = this.buehne, FX = this.FX, FY = this.FY, A = this.anim;
+      if (this.quer) this.grund();
+      const [wx, wy] = A && this.schirm !== "Pause" ? this.bild.vfx.versatz() : [0, 0];
+      if (A) { if (wx || wy) rechteck(z, FX, FY, 240, 320, F.Schatten); this.bild.zeichnen(z, FX + wx, FY + wy); }
+      else { kopieren(z, this.feld, FX, FY); this.bild.nichtGezeichnet(); }
+      if (this.dankeT > 0 && this.schirm === "Spiel") {
+        const d = Ac.jana ? "Danke Jana!" : "Danke!";
+        if (!A) { schleier(z, FX, FY + 8, 240, 24, F.Nacht, 150); mitte(z, d, FX + 120, FY + 13, F.Gold, 2); }
+        else {
+          // gleitet von oben herein und blendet am Ende aus
+          const t = glatt(Math.min(1, this.dankeEin / 8)), a = Math.min(255, div(this.dankeT * 255, 10)), y = FY + 8 - ((1 - t) * 30 | 0);
+          schleier(z, FX, Math.max(FY, y), 240, 24 - Math.max(0, FY - y), F.Nacht, div(150 * a, 255));
+          if (y + 5 >= FY) mitte(z, d, FX + 120, y + 5, mischen(F.Nacht, F.Gold, a), 2);
+        }
+      }
+      // Punkte zählen hoch, die Grenzen des Balkens gleiten (mit Animationen)
+      const spielt = this.schirm === "Spiel", sc = Game.actor ? Game.actor.score : 0;
+      if (A && spielt) this.punkteAnzeige += Math.max(Math.min(1, sc - this.punkteAnzeige), (sc - this.punkteAnzeige) * 0.15); else this.punkteAnzeige = sc;
+      const punkte = "" + Math.round(this.punkteAnzeige), pf = Math.round(this.punkteAnzeige) < sc ? F.Text : F.Gold, lv = Game.Levelnr + "/" + Game.LEVEL_ANZ;
+      const left = Math.max(0, Game.scionsLeft), verloren = Math.max(0, Game.SCIONS_ANZ - Game.scionsLeft - Game.scionsSaved);
+      const pause = (x, y) => { rechteck(z, x, y, 4, 13, F.Text); rechteck(z, x + 9, y, 4, 13, F.Text); };
+      if (!this.quer) {
+        // hochkant: Leiste oben mit Punkten, Level, Pausezeichen; darunter Babys (gerettet, unterwegs, verloren) und Monster
+        rechteck(z, 0, 0, 240, FY, F.Leiste); rechteck(z, 0, FY - 1, 240, 1, F.Rand);
+        text(z, punkte, 6, 5, pf, 2, F.Schatten);
+        rechts(z, lv, 204, 5, F.Gold, 2); rechts(z, "Level", 198 - breite(lv, 2), 12, F.Blass);
+        pause(216, 6);
+        bild(z, Tb.img[Tb.scionPNG], A ? (div(this.zeit, 3) % 2) * 11 : 0, 0, 11, 11, 6, 24, 1);
+        const wz = (x, n, c) => { rechteck(z, x, 27, 5, 5, c); text(z, "" + n, x + 8, 26, F.Text); };
+        wz(24, Game.scionsSaved, F.Gruen); wz(62, left, F.Blau); wz(100, verloren, F.Rot);
+        bild(z, Tb.img[Tb.absorberPNG], 0, 0, 15, 15, 150, 22, 1); text(z, "" + Game.ABSORBER_ANZ, 169, 26, F.Text);
+        return;
+      }
+      // quer: links Punkte, Babys und Monster; rechts Level und Pausezeichen; darunter bleibt Platz für Stick und Knöpfe
+      // Die Tafeln enden bei y 146, damit Stick und Knöpfe (unten, je 150 px) bei normalen Handys darunter frei bleiben.
+      // Doppelte Schrift ab 118 Breite, Wörter erst ab 190 (sonst nur Farbe und Zahl wie hochkant); ganz schmal einfache Schrift.
+      const lb = FX - 12, g = lb >= 118 ? 2 : 1, worte = lb >= 190, rx = FX + 246, rb = this.B - rx - 6, zh = 9 * g;
+      tafel(z, 6, 6, lb, 140);
+      text(z, "Punkte", 14, 12, F.Blass); text(z, punkte, 14, 22, pf, g + 1, F.Schatten);
+      rechteck(z, 12, 50, lb - 12, 1, F.Rand);
+      const wz = (y, n, w, c) => { rechteck(z, 14, y + g, 4 * g + 1, 4 * g + 1, c); if (worte) text(z, n, 16 + 6 * g, y, F.Text, g); rechts(z, "" + w, FX - 14, y, c, g); };
+      wz(58, "Gerettet", Game.scionsSaved, F.Gruen); wz(58 + zh, "Unterwegs", left, F.Blau); wz(58 + 2 * zh, "Verloren", verloren, F.Rot);
+      rechteck(z, 12, 114, lb - 12, 1, F.Rand);
+      bild(z, Tb.img[Tb.absorberPNG], 0, 0, 15, 15, 12, 121, 1); if (worte) text(z, "Monster", 34, g === 2 ? 122 : 125, F.Text, g); rechts(z, "" + Game.ABSORBER_ANZ, FX - 14, g === 2 ? 122 : 125, F.Text, g);
+      tafel(z, rx, 6, rb, 58);
+      text(z, "Level", rx + 8, 12, F.Blass); text(z, lv, rx + 8, 22, F.Gold, g + 1, F.Schatten);
+      rechteck(z, this.B - 36, 18, 7, 22, F.Text); rechteck(z, this.B - 24, 18, 7, 22, F.Text);
+    }
+    Pause() {
+      const z = this.buehne, X = this.FX, Y = this.FY - 40; this.spielbild(); schleier(z, X, this.FY, 240, 320, F.Nacht, 170);
+      mitte(z, "Pause", X + 120, Y + 130, F.Gold, 3); tafel(z, X + 28, Y + 170, 184, 2 * ZEILE + 12); this.pause.zeichnen(z, X + 34, Y + 176, 172, this.zeit);
+      const w = this.pause.bedienen(this.e, this.tipps, this.halten);
+      if (this.e.PauseNeu || this.e.ZurueckNeu || w === 0) this.wechseln("Spiel");
+      else if (w === 1) { Game.GAMESTATE[0] = Game.MENU; this.haupt.Index = 0; this.wechseln("Menue"); }
+    }
+    // Levelende: das Feld gleitet zu Ende und die Effekte laufen aus, die Tafel blendet auf und fällt herein
+    ergebnis(gut) {
+      this.bild.alpha = Math.min(1, this.bild.alpha + 25 / 60); this.bild.schritt();
+      const z = this.buehne, X = this.FX + 120, Y = this.FY - 40; this.spielbild();
+      const te = this.anim ? glatt(Math.min(1, this.schirmUhr / 18)) : 1, oben = ((1 - te) * -36) | 0, unten = ((1 - te) * 24) | 0;
+      schleier(z, this.FX, this.FY, 240, 320, F.Nacht, (190 * te) | 0);
+      mitte(z, gut ? "Geschafft!" : "Verloren!", X, Y + 90 + oben, gut ? F.Gruen : F.Rot, 3);
+      mitte(z, gut ? "Babys gerettet" : "Die armen Babys!", X, Y + 128 + unten, F.Text, 2);
+      if (gut) mitte(z, Game.scionsSaved + " / " + Game.SCIONS_ANZ, X, Y + 150 + unten, F.Gold, 2);
+      mitte(z, "Punkte: " + (Game.actor ? Game.actor.score : 0), X, Y + 176 + unten, F.Text);
+      tafel(z, X - 92, Y + 200 + unten, 184, 2 * ZEILE + 12); this.ende.zeichnen(z, X - 86, Y + 206 + unten, 172, this.zeit);
+      const w = this.schirmZeit > 5 ? this.ende.bedienen(this.e, this.tipps, this.halten) : -1;
+      if (w === 0) { Game.init(); if (gut) this.wechseln("Intro"); else { Game.GAMESTATE[0] = Game.PLAY; this.spielStarten(); } }
+      else if (w === 1 || (this.e.ZurueckNeu && this.schirmZeit > 5)) { Game.GAMESTATE[0] = Game.MENU; this.haupt.Index = 0; this.wechseln("Menue"); }
+    }
+    Verloren() { this.ergebnis(false); }
+    Geschafft() { this.ergebnis(true); }
+  }
+  return Handy;
+})();
+if (typeof module !== "undefined") module.exports = BRHandy;
+</script>
+<script>
+"use strict";
+// Babys retten fürs Handy (nur dafür gebaut, Thomas 16.11.2026: „mobile only“, „mobile first“):
+// Remaster (handy.js, hochkant, zum Antippen) oder Klassisch (#klassisch, wie das Original-Handy). Läuft ohne Internet,
+// Bilder und Schrift sind eingebettet. Optionen bleiben im Browser gespeichert. Tastatur geht nur zum Ausprobieren am PC.
+const DATEIEN = {"absorber.png": "iVBORw0KGgoAAAANSUhEUgAAADwAAAAPCAMAAACPzFxDAAAABGdBTUEAAK/INwWK6QAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAAAwUExURZOUANrbAFxbEd8IAeze/rm3fbZOAGQCAN7e/9naAMPEAIiJAJeYAJaXAN3eAP///yWk01AAAAAQdFJOU////////////////////wDgI10ZAAACHElEQVR42mLgBwF2ZmZmdn444OTj5ORHAjy8PMhcTj4+iDRAADGACDZWFg4WJrhuLh5eoDQzjMvExMfIyMUA4zJz8vHw8HCBmAABBBJj5ubi4+NjYoIqZ+bhAXL5OGBcbiYeXl5eLhiXD6iXl5cHxAUIIKBmZg4uNpCzufnA8syMEL0cEN3MPExgzbwQpzCD5EDaGYBcgAAkj1sOACAMwhYS1DEf97+tc/abJsXSHWROEfvZU0sFZa0uAO4uVWpHfIDAuQLwQMYoAMAwCCxClJih//9tzVJxP72T+5+8HpyFpsmiSx1Xg7Ds4FqAoBSb+wRgiQxSAACBEFi4RIL4/+em0NVxLrpY8mWZYmTDwAUHrtwvTmaRMU4emqK2ngCCaAYHGFAzDx8vI9B3UM2MIM08fDCbQTGA0MwLVAkQQAx8DHCbgbbwAc3jgWnmYwFFCx/cZpBmRiTNPAABxAC0H2YzUDMnP9g3MI+xgxIEVDMHMETYWbmAYQEMEWA48nLxAwQQMMB4gCEEDE8mJhCfnwkUkNAQZQdHDTcTByRCgHHBxgCMBTDgBSYbgAACxTMnKBqB0ckAiUkGXkgqgUY73GYIF2gQOKZB0Q4QQOAUxgXWzA1LQwy8YO0wLih5cnLxwLgQvWAuQACBkywPFycjIzDe4GkbqBeRttmZWFhYWNmQ0jYfAw84ZwAEEAO2fAPPNvzY8hw/JydUGiDAAGQrJGz3Af+QAAAAAElFTkSuQmCC", "actor.png": "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", "bonus.png": "iVBORw0KGgoAAAANSUhEUgAAAIAAAAAgCAMAAADt/IAXAAAABGdBTUEAAK/INwWK6QAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAAAbUExURYKr8is+6LvFvYqmkbp2Ad3v8U9mVAAAAP///0iT4xoAAAAJdFJOU///////////AFNPeBIAAAF6SURBVHjaYuAYYAAQQAwD7QCAABpwBwAEEJ0cwIJTDCCAGAbMfqgoQAAx0MoOFjQ2NnkQBgggBpr5kYU4eYAAYiDPDlz+IZ0PEEBoDmADATz2w+VZqCUPEECoDmBjAAFW3PYj5FmoJA8QQGgOYAcBVpyxQAN5gABiQAl/RnY2BiZ2VlbsRtBEHiCAkB3ACIogBgY2ZjbsBtBEHiCAGFADiI2RmYEVVyDSRB4ggBiQQ4idjY2FhYWVlR1rGNJGHiCAkB3AAIwhfAbQRB4ggBiQo4idEZ8PaCMPEEDoaQCYSvDGIdXlAQII2QEMwFhiwJONaCIPEEDIDgCmUZAb2VnZmLEaQBN5gAAa8JIQIIDQ6wImIGTFWRUiybNQSR4ggIiuDVk48Nd25MoDBBDx7QEWPO0LFmzyLETJAwQQlVpELKQ5GEkIIIBo1iRjwd8khAsCBBBdWsUseIQBAmgAm+UQQYAAGvCeEUAADbgDAAJowB0AEEAD7gCAAAMAYBJ3pbu46j4AAAAASUVORK5CYII=", "explosion.png": "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", "schrift-0-1-8.png": "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", "schrift-0-1-8.txt": "hoehe 18 grundlinie 14 zelle 32\n0 0\n1 10\n2 10\n3 10\n4 10\n5 10\n6 10\n7 10\n8 10\n9 0\n10 0\n11 10\n12 11\n13 0\n14 10\n15 10\n16 10\n17 10\n18 10\n19 10\n20 10\n21 10\n22 10\n23 10\n24 10\n25 10\n26 10\n27 10\n28 10\n29 10\n30 10\n31 10\n32 4\n33 4\n34 6\n35 7\n36 7\n37 10\n38 9\n39 3\n40 4\n41 4\n42 5\n43 8\n44 4\n45 4\n46 4\n47 4\n48 7\n49 7\n50 7\n51 7\n52 7\n53 7\n54 7\n55 7\n56 7\n57 7\n58 4\n59 4\n60 8\n61 8\n62 8\n63 8\n64 13\n65 9\n66 9\n67 9\n68 9\n69 8\n70 8\n71 10\n72 9\n73 4\n74 7\n75 9\n76 8\n77 11\n78 9\n79 10\n80 9\n81 10\n82 9\n83 9\n84 8\n85 9\n86 9\n87 13\n88 9\n89 8\n90 7\n91 4\n92 4\n93 4\n94 8\n95 7\n96 4\n97 8\n98 8\n99 7\n100 8\n101 8\n102 4\n103 8\n104 8\n105 4\n106 4\n107 7\n108 4\n109 12\n110 8\n111 8\n112 8\n113 8\n114 5\n115 6\n116 4\n117 8\n118 7\n119 11\n120 8\n121 7\n122 7\n123 5\n124 3\n125 5\n126 8\n127 7\n128 10\n129 10\n130 10\n131 10\n132 10\n133 10\n134 10\n135 10\n136 10\n137 10\n138 10\n139 10\n140 10\n141 10\n142 10\n143 10\n144 10\n145 10\n146 10\n147 10\n148 10\n149 10\n150 10\n151 10\n152 10\n153 10\n154 10\n155 10\n156 10\n157 10\n158 10\n159 10\n160 4\n161 4\n162 7\n163 7\n164 7\n165 7\n166 3\n167 7\n168 4\n169 10\n170 5\n171 7\n172 8\n173 4\n174 10\n175 7\n176 5\n177 7\n178 4\n179 4\n180 4\n181 7\n182 7\n183 4\n184 4\n185 4\n186 5\n187 7\n188 11\n189 11\n190 11\n191 8\n192 9\n193 9\n194 9\n195 9\n196 9\n197 9\n198 13\n199 9\n200 8\n201 8\n202 8\n203 8\n204 4\n205 4\n206 4\n207 4\n208 9\n209 9\n210 10\n211 10\n212 10\n213 10\n214 10\n215 8\n216 10\n217 9\n218 9\n219 9\n220 9\n221 8\n222 9\n223 8\n224 8\n225 8\n226 8\n227 8\n228 8\n229 8\n230 12\n231 7\n232 8\n233 8\n234 8\n235 8\n236 4\n237 4\n238 4\n239 4\n240 8\n241 8\n242 8\n243 8\n244 8\n245 8\n246 8\n247 7\n248 8\n249 8\n250 8\n251 8\n252 8\n253 7\n254 8\n255 7\n", "scion.png": "iVBORw0KGgoAAAANSUhEUgAAABYAAAALCAMAAABMIo1MAAAABGdBTUEAAK/INwWK6QAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAAAMUExURQCZ/2bM/wAAAP///+YM6ScAAAAEdFJOU////wBAKqn0AAAAfUlEQVR42mJgBgImJiZmKIAyAQKIAcxihPLgTIAAYgAyGRkZGRhAHAQTIICAwoxADgMTA0gYzgQIIAYgA8pmQmICBBBIGKwTpBfBBAggiDATWBSJCRBAILMhSsBmw5gAAYTDJQABBLULiIFqmKBMJmaAAIKqAhMQBKYAAgwA0FkBk50+diIAAAAASUVORK5CYII=", "standard.png": "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0QuPv2Kk48vpOu7vxo0btf6MPGvyg6zYnu6H3BQAc5M0TScALBB5CwBA9uQtAMAzkz11///UaPxftl/fIz4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmRISEtKgQQPztj+H/QNppns7HTp0uH//fnx8fK5cuehw4j/n89d8GjZsGBwcTMbk7Twdyf7t27d3dHSkw3MkCgCYwLydHNv/JCAKADQqX778unXrYmJi7t27d/r06Xbt2ikfQH5+fmfOnLl58+aPP/6YL18+5W9h1KhRV65cuX379tatW8uWLas2uJub2xdffJGYmBgfH+/v769jPgQGBkr82NjYadOm2dnZqe18C31DaMKECdevX798+XJAQIDyC0nAvn37nj179uHDh8ZuhgT6Z/FHjx790Ucfma79LVq0kMwj+UeyhBz36NEjMjJS1e2W+N26dTt//rym8WNraztp0qRr166lpaXt3bu3cuXKJisAoaGhAwYMyJ07d548ecaOHSvvRPkNPnHiRMWKFZ2cnHr37i2dpTZ+v379pMC4urpKaRkyZMivv/6qNv7333/v4+Pj6OgolfL48ePK50P37t3fffddiS/9M3PmzBEjRphrAv/rX/+SpCPjR1P/SMCdO3d6eXnJsa+vr8xhCsAT47/33nszZswwY/v37NkjedPFxUUKmKTR4ODgSpUqSWJVcrsl/o4dOypUqGBjY6Nj/AwfPnz27NmyTJT2y+QNCgoy8W5A0tCjR4+U3+BGjRoZx+7u7soT9NGjRyX76OuT6OhoBwcH47hJkybK58PBgwelehnHxYsXl6WQuSawtF+abRzLjdZRAKS06Hs7OaMAyN5r3rx5Jm1/1apVjWPJofJSFosKry4RqlSpou/thIeHlylTxjguWLBgTEyM+fJ+nTp1ZGEutUs2SjommJRH4zhXrlxJSUlq46empspiQV/nSHxZOxjHsslQ3j83b960flBz584dc01g6R97e3vjWDaROsaP9feXKAAZ48smLCoqSpbPJm2/ZYFlvLSezkoKQLr4att/9+5dyzcs7Ozs5KXJsn/v3r1l9Pj7+9esWbNUqVI6JpgUdksHJScnq41/69YtS4LW4cGDB5YBJFsN5f0jHeLk5GTeBCT9b+kfqfS6EzQFIGP8b775RkpvRESErEBNuoPRd7t1jx9Z0VoKgEwE831mHhcXV7RoUeNY9ko6JliNGjWMYw8Pj7Nnzyp/BKT1O47Xr18vWbKkcVy7dm3l/XPs2DFLfDMmoP3791vGzxtvvEEByPr4xpK5T58+X3zxBQUgi8eP5B/LF0+kAJuvAMjyv3v37rIIfeWVVzR9iLdr164iRYrIPmDQoEGzZs1SvoPp2LGjs7Nz/vz5AwICDh8+rDb+6tWrP/74Y1dX19KlSx84cEB5//Tv33/MmDES39PTc+zYsdu3bzfXBO7ateuECRNkb1SmTJlDhw5RALIrvpQBSUbWz7spAFkwfvr162f9IbCsF01WAGTVFh4enpqaKtlfJrOOCTZgwADpl9u3b69bt07SnNr4NjY2H330UUJCQkpKyqZNm0qVKqU2vru7+5dffpmYmChvQQqY8v6ReSsFRoJL+9evXy+V0lwTWEj///bbbxcuXPD397937x4FILviN23a9JdffqEAZOX4kfk7ffr0m4/JYrF69eovAM8nqe7R0dH0QxYXYADIHlevXpWNo5OTU6FChWbNmqXjq+gm5eLiYvyPmOgKADlTo0aNfv3117S0tISEhNmzZ5v3fzqknJTDe/fuSQ2gKwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAzyNfX186Ac+yxo0bX7hw4dGjRzqCa/1H7aXNkZGRr7/+OjcRzyitEwDIPMmhb731lr29venGv52dXbNmzfbt28dNBAUAeMohqin7Z834v337Njfxf92APn36xMfH37hxY9GiRW5ubmrj29raTp069bfffouLi+vZs6fy+y0B+/Xrd+vWreDgYB3906FDh/v378tVYmNjN27cWLVqVbWNt8iaCabwQvnz54+JibEeMK6urnJGzqu6xOXLl0uWLGkcV6pUSRpfr14946Wcj46OzmT8pUuX+vn5WV7K+FyyZImqxlepUuXkyZPWZ5ydnaV/8uXLp2kIiW+//Vb5EHr48KGpF0Ba258TCsCpU6e8vb09PT2//PLLH374QW38IUOGjB8/3sXFpXLlyidOnNBRAL7//ntJPV5eXjr6R7K/1AAjuwUEBISHh5trAugrAGLBggUjRoywvBw2bNjChQsVxl++fPm7775rHM+aNev48eOWBN21a1e575mML8Py8OHDMjKNfC3HckZh+0NCQlq0aGF5KSst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", "standard.txt": "hoehe 20 grundlinie 16 zelle 32\n0 0\n1 11\n2 11\n3 11\n4 11\n5 11\n6 11\n7 11\n8 11\n9 0\n10 0\n11 11\n12 13\n13 0\n14 11\n15 11\n16 11\n17 11\n18 11\n19 11\n20 11\n21 11\n22 11\n23 11\n24 11\n25 11\n26 11\n27 11\n28 11\n29 11\n30 11\n31 11\n32 4\n33 5\n34 5\n35 8\n36 8\n37 13\n38 10\n39 3\n40 5\n41 5\n42 6\n43 9\n44 4\n45 5\n46 4\n47 4\n48 8\n49 8\n50 8\n51 8\n52 8\n53 8\n54 8\n55 8\n56 8\n57 8\n58 4\n59 4\n60 9\n61 9\n62 9\n63 8\n64 15\n65 9\n66 10\n67 11\n68 11\n69 10\n70 9\n71 11\n72 10\n73 3\n74 7\n75 10\n76 8\n77 11\n78 10\n79 12\n80 10\n81 12\n82 11\n83 10\n84 9\n85 10\n86 9\n87 15\n88 9\n89 9\n90 8\n91 4\n92 4\n93 4\n94 5\n95 8\n96 5\n97 8\n98 8\n99 8\n100 8\n101 8\n102 4\n103 8\n104 8\n105 3\n106 3\n107 7\n108 3\n109 13\n110 8\n111 8\n112 8\n113 8\n114 5\n115 8\n116 4\n117 8\n118 7\n119 11\n120 7\n121 7\n122 8\n123 5\n124 3\n125 5\n126 9\n127 8\n128 11\n129 11\n130 11\n131 11\n132 11\n133 11\n134 11\n135 11\n136 11\n137 11\n138 11\n139 11\n140 11\n141 11\n142 11\n143 11\n144 11\n145 11\n146 11\n147 11\n148 11\n149 11\n150 11\n151 11\n152 11\n153 11\n154 11\n155 11\n156 11\n157 11\n158 11\n159 11\n160 4\n161 5\n162 8\n163 8\n164 8\n165 8\n166 3\n167 8\n168 5\n169 11\n170 5\n171 8\n172 9\n173 5\n174 11\n175 8\n176 6\n177 8\n178 5\n179 5\n180 5\n181 8\n182 8\n183 5\n184 5\n185 5\n186 5\n187 8\n188 13\n189 13\n190 13\n191 9\n192 9\n193 9\n194 9\n195 9\n196 9\n197 9\n198 15\n199 11\n200 10\n201 10\n202 10\n203 10\n204 3\n205 3\n206 3\n207 3\n208 11\n209 10\n210 12\n211 12\n212 12\n213 12\n214 12\n215 9\n216 12\n217 10\n218 10\n219 10\n220 10\n221 9\n222 10\n223 9\n224 8\n225 8\n226 8\n227 8\n228 8\n229 8\n230 13\n231 8\n232 8\n233 8\n234 8\n235 8\n236 3\n237 3\n238 3\n239 3\n240 8\n241 8\n242 8\n243 8\n244 8\n245 8\n246 8\n247 8\n248 8\n249 8\n250 8\n251 8\n252 8\n253 7\n254 8\n255 7\n", "tiles_32x32.png": "iVBORw0KGgoAAAANSUhEUgAAAOAAAAAgCAMAAAA8G4RnAAAABGdBTUEAAK/INwWK6QAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAABmUExURSJHOjFjW3SbAIgANAB/iP///0x1lNrz6I2VRc/Xi+Dz2pS82z9SLk9mVC5SOZmmiv89Xv+0Pb6ELHQ2AMHFu1xmT817KbvFvYgIAC2EAAA+dHQCAP9cPXn/RT2I/yRPUQAAAP///8ovTbUAAAAidFJOU////////////////////////////////////////////wAN0MNxAAAEwklEQVR42mJgIADk5BSAUA5EQWgS+bKyCkAoC6IgNBpfRkYBCGVAFIRG47OCgCJWgEcKAQACiIFRHgVg8InwkAI+PtAbCmgeVEDzoAKaB1H4rEAuLg/ilkIAgAAi6EGFAQasCvhikLAHAQKIsAfB8aAAjzqS+eB4UoCnTQw+OJ4U4GkTnY/XD0R4ECCABr8H8WUzIvIgQAAR40EFWK6CsEjky0JISObDwpeBkJDMh8lXpBAABBBReRDudjmI80nlw/0mC/EeOh/uNxmI95D5lHoQIIAIl6IK8PJRQQ6eBonnwxImvNxE48MSJrzcRONT6kGAACLWg/AYwcEfJB7kZQNCFBGAACK2moClNgV0vhyaIDpfFokP8RMqXwaJD/ETKh/VAxycXCJ4/MfGDQLsyEIAAUR5Ra+AFHcwQSQOrNBERsgcWKGJjJA5qD7gEeXnx+dBcLigeBAggCiu6JE9hI2P7CFsfGQPYeOjRaCCgggXTu+xsSkA41CBnR3JiwABRHk9qIBUbsITKDof5jtZHHyY72Qw+Mje4xDi5OLkEuLC4UU2Pj4+oAeB/kTyIEAAUaGil0NJmRh8pHYn2EPofKR2J9hfaHyEU7k4gDlQQYGTiwuHD4EJFOg5bnaURAoQQCR5ELlsQVTsUBaKB5H4sCodxYNIfFiVjuJBBB/JgzxiXPwKCkBf8nNhT6FA/wkLCrOzKyClUYAAYmBEBRh89PwGdTqaL2kHEB7gVBDgAolwCijg9qCgsCCqBwECMF7GKgADIQwt6nKdbjwVSv7/KxudroVCTeCRUUTB488/eG3X8pFZZqDCAlEM5miibSKgXBxedGZvoi2qoFITWUzmbKKt2wpijmrwnBifDa73BG8BRFQ1gc+DUlJAO6WAQAGMpND5kpJAviQQKICRJDpfWhrIlwYCBTCSRucjlzEcoFKUi5OTkwNPHhRHzYMAATTo+4NIdSDIgzw8QP9x8hBfTQAEIK2MUQAAARAIFTXVG+r/n+y0IIK2FkFXD/1fUcCEz2RRawZV2faACZ/BotYMqrLtARM+o0WtGVRly983wcIg7wIHJ9Fbrb3kfMIpgCj3IDghgjwF9RCELwXngxMiyFNQD0H4knA+OCGCPAX1IIQvLY3pQWAk8igo8PCQ1JIBCCDK+4NSEBKS+bDwJSEkJPNh4UtDSEjmw+SjtUWBUUhaWxQggKjSH4T7TQriPXQ+3G+SEO+h8+F+k4Z4D5mP1hbl4eAnrTcBEEAU9wdhCZMFVF+A8h8aH5YwmUD1BSj/ofFhCZMZVF+A8h8an9L+IEAAUdwfhFR70DwIKlzQ+JBqD5oHQYULGh9S7UHzIKhwQeNT6kGAAKK4PyiFJAip/FD5kkh8SOWHypdG4kMqP1Q+pR4ECCCK+4NSkFoBjCAeROVLQmoFMIJ4EJUvDakVwAjiQVQ+pR4ECCCKK3pYrQCLO3Q+rFaAxR06H1YrwOIOnU/psCFAAFGpPwj1DYuUAnY+1DdMkjj4UN8wS2PwKR34BQggKrRkpBApE+QvdD6TJCJlgvyFzmeWRqRMkL/Q+JQO3QMEEBUqemiVDvUXBh9WpUP9hcGHVelQf6HzKZ18AQggovqDhCp6mk6+UDh9BhBgAPksHa4fDZt7AAAAAElFTkSuQmCC"};
+BR.Level.karten = [[1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,6,-1,1,1,-1,5,-1,1,2,1,-1,-1,4,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,2,2,2,2,2,1,-1,-1,-1,-1,-1,-1,1,1,-1,2,2,2,-1,2,2,2,2,2,2,2,2,2,2,2,-1,-1,-1,-1,-1,1,-1,-1,3,4,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,6,-1,1,-1,-1,-1,-1,-1,-1,1,1,-1,4,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,3,-1,-1,4,4,-1,-1,1,2,2,-1,-1,-1,1,-1,-1,5,-1,-1,-1,1,1,-1,-1,1,2,2,2,1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,1,-1,-1,-1,1,-1,-1,-1,-1,-1,2,2,2,2,-1,4,-1,-1,-1,2,-1,-1,-1,3,-1,-1,1,1,-1,-1,1,-1,4,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,1,-1,-1,-1,1,-1,-1,-1,3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,2,-1,-1,-1,2,-1,-1,-1,-1,-1,6,-1,-1,-1,-1,3,-1,4,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,4,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,3,4,-1,-1,-1,-1,1,1,-1,-1,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,3,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,3,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,3,4,-1,1,2,2,2,1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,1,-1,4,-1,4,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,-1,-1,1,2,1,-1,1,1,-1,3,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,4,-1,1,-1,-1,1,-1,1,-1,1,1,-1,-1,-1,5,-1,-1,2,2,2,2,2,-1,2,2,2,2,2,2,-1,-1,-1,1,-1,2,2,-1,2,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,1,2,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,4,4,-1,-1,-1,-1,-1,1,-1,4,4,-1,-1,-1,1,1,-1,-1,1,-1,2,2,1,-1,-1,3,-1,-1,-1,-1,-1,-1,-1,1,-1,1,-1,1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,2,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,1,-1,1,-1,-1,-1,5,-1,-1,1,1,-1,-1,-1,-1,4,-1,1,-1,-1,-1,-1,-1,2,2,2,2,2,2,-1,2,2,2,-1,-1,-1,-1,-1,-1,1,1,-1,3,-1,-1,-1,-1,2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,4,-1,-1,-1,1,1,-1,-1,-1,6,-1,-1,-1,-1,4,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,4,-1,-1,-1,-1,-1,-1,6,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,-1,-1,-1,2,2,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,1,1,-1,-1,-1,-1,-1,-1,-1,2,2,2,2,2,2,2,2,1,1,1,2,2,2,2,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,2,2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,1,1,-1,-1,1,6,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,6,-1,-1,-1,1,-1,-1,1,1,-1,-1,1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,1,1,-1,-1,2,-1,-1,1,-1,5,1,-1,-1,-1,2,2,2,2,2,2,2,2,2,-1,-1,-1,-1,1,-1,-1,1,1,-1,-1,-1,-1,-1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,1,1,-1,-1,-1,-1,-1,2,2,2,1,-1,-1,-1,-1,-1,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,6,1,1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,5,1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,6,-1,2,-1,-1,-1,-1,-1,1,3,3,3,3,3,3,3,3,3,3,3,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,6,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,6,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,1,1,1,1,1,-1,-1,1,-1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,1,2,2,2,2,2,2,2,2,2,2,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,6,-1,-1,1,1,-1,-1,-1,-1,5,-1,-1,-1,-1,-1,-1,1,1,1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,5,-1,1,1,-1,-1,-1,1,2,2,2,2,2,2,-1,1,1,1,1,1,1,1,-1,6,-1,1,1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,2,2,2,2,2,2,2,-1,-1,-1,1,1,1,-1,-1,-1,-1,1,1,-1,-1,-1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,-1,-1,1,1,1,-1,-1,-1,2,2,2,2,2,2,2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,2,2,2,-1,-1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,2,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,2,2,2,5,2,2,2,2,2,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,-1,-1,-1,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,1,2,2,2,2,2,2,2,2,2,2,1,1,1,1,2,2,2,2,1,1,1,1,1,1,1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,2,2,1,-1,-1,-1,-1,2,2,2,2,2,1,1,-1,-1,-1,-1,1,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,1,-1,-1,1,2,2,2,2,2,-1,-1,-1,-1,-1,2,2,2,2,2,1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,4,4,4,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,5,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,6,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,2,1,-1,-1,-1,1,1,-1,-1,1,-1,-1,1,-1,-1,-1,-1,-1,2,2,2,2,2,2,2,2,-1,-1,1,-1,-1,1,-1,-1,-1,1,1,-1,-1,1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,1,-1,-1,-1,1,1,-1,-1,1,-1,-1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,1,-1,-1,-1,1,1,-1,-1,1,-1,-1,2,2,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,1,-1,-1,-1,1,1,-1,-1,1,-1,-1,-1,-1,2,2,1,1,1,1,6,-1,-1,-1,1,1,1,2,2,-1,-1,1,-1,-1,-1,1,1,-1,-1,1,-1,-1,-1,-1,-1,-1,2,2,2,2,1,1,1,1,1,2,2,-1,-1,-1,-1,1,-1,-1,-1,1,1,-1,-1,2,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,2,2,2,2,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,5,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,2,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,1,1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,-1,-1,-1,1,2,2,2,2,1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,1,1,2,2,1,-1,-1,-1,1,-1,-1,-1,-1,1,1,1,1,1,1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,1,1,2,-1,-1,1,-1,-1,-1,1,-1,-1,-1,-1,2,2,2,2,2,1,-1,-1,1,1,-1,-1,-1,-1,-1,1,1,2,-1,5,-1,1,-1,-1,-1,2,6,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,1,1,-1,-1,-1,-1,1,1,2,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,1,1,-1,-1,-1,1,1,2,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,2,-1,-1,1,1,-1,-1,1,1,2,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,1,2,-1,6,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,-1,-1,-1,1,1,-1,-1,2,-1,-1,-1,-1,-1,-1,-1,-1,2,-1,-1,-1,-1,-1,-1,2,2,2,2,2,2,2,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],[1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,1,2,2,2,2,2,2,1,6,-1,-1,-1,-1,6,1,2,2,2,2,2,2,1,-1,-1,-1,1,1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,-1,-1,1,-1,-1,-1,1,1,-1,-1,-1,1,-1,-1,1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,-1,-1,1,-1,-1,-1,1,1,-1,-1,-1,1,-1,-1,1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,-1,-1,1,-1,-1,-1,1,1,-1,-1,-1,1,-1,5,1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,5,-1,1,-1,-1,-1,1,1,-1,-1,-1,1,1,1,1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,1,1,1,1,-1,-1,-1,1,1,-1,-1,-1,2,2,2,2,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,2,2,2,2,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,1,1,1,1,1,1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,1,-1,-1,-1,-1,-1,-1,1,2,2,2,2,2,2,2,2,2,2,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,6,1,-1,-1,-1,-1,-1,-1,1,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,2,2,2,2,2,2,2,2,2,-1,-1,-1,-1,-1,-1,2,2,2,2,2,2,2,2,2,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,2,2,2,2,2,2,2,2,1,-1,-1,-1,-1,-1,-1,1,2,2,2,2,2,2,2,2,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,5,1,-1,-1,-1,-1,-1,-1,1,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]];
+BR.Ac.jana = true;
+const klassisch = location.hash === "#klassisch";
+// Die Leiste (⇄, Remaster) gibt es nur in Klassisch; im Remaster steht „Stick“ in den Optionen. Zurück ins Remaster
+// geht es über den Knopf oben rechts (wie in der Exe) oder über „Verlassen“ im Handyspiel.
+document.getElementById("art").onclick = () => { location.hash = ""; location.reload(); };
+let seite = "links";
+try { seite = localStorage.getItem("babys-retten-seite") || "links"; } catch (e) { }
+function seiteSetzen(s) { seite = s; try { localStorage.setItem("babys-retten-seite", s); } catch (e) { } document.body.classList.toggle("getauscht", s === "rechts"); }
+seiteSetzen(seite);
+document.getElementById("seiten").onclick = () => seiteSetzen(seite === "rechts" ? "links" : "rechts");
+
+const roh = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+async function inflate(z) {
+  const s = new Blob([z]).stream().pipeThrough(new DecompressionStream("deflate"));
+  return new Uint8Array(await new Response(s).arrayBuffer());
+}
+
+// gehaltene Tasten: Tastatur und Touch
+// tipp/handyTipp: auch ein Druck, der kürzer als ein Bild (40 ms) ist, zählt für ein Bild
+const gehalten = new Set(), handy = new Set(), tipp = new Set(), handyTipp = new Set();
+const TASTEN = { ArrowUp: "hoch", ArrowDown: "runter", ArrowLeft: "links", ArrowRight: "rechts", KeyW: "hoch", KeyS: "runter", KeyA: "links", KeyD: "rechts",
+  Numpad8: "hoch", Numpad2: "runter", Numpad4: "links", Numpad6: "rechts", Enter: "ok", Space: "ok", Numpad5: "ok", Escape: "zurueck", Backspace: "zurueck", KeyP: "pause" };
+// Klassisch zusätzlich wie FreeJ2ME: Q/W Softtasten, Ziffern, E = *, R = #
+const HANDY = { KeyQ: -6, KeyE: 42, KeyR: 35 };
+for (let i = 0; i <= 9; i++) { HANDY["Digit" + i] = 48 + i; if (i !== 2 && i !== 4 && i !== 5 && i !== 6 && i !== 8) HANDY["Numpad" + i] = 48 + i; }
+addEventListener("keydown", (e) => {
+  if (e.repeat) { e.preventDefault(); return; }
+  const t = TASTEN[e.code];
+  if (t) { gehalten.add(t); tipp.add(t); if (t === "zurueck" && e.code === "Escape") { gehalten.add("pause"); tipp.add("pause"); } e.preventDefault(); }
+  if (klassisch && HANDY[e.code] !== undefined) { handy.add(HANDY[e.code]); handyTipp.add(HANDY[e.code]); e.preventDefault(); }
+});
+addEventListener("keyup", (e) => {
+  const t = TASTEN[e.code];
+  if (t) { gehalten.delete(t); if (e.code === "Escape") gehalten.delete("pause"); }
+  if (HANDY[e.code] !== undefined) handy.delete(HANDY[e.code]);
+});
+addEventListener("blur", () => { gehalten.clear(); handy.clear(); });
+for (const k of document.querySelectorAll(".t")) {
+  const t = k.dataset.t;
+  const an = (e) => { e.preventDefault(); k.setPointerCapture?.(e.pointerId); k.classList.add("an"); gehalten.add(t); tipp.add(t); if (t === "zurueck") { gehalten.add("pause"); tipp.add("pause"); } };
+  const aus = () => { k.classList.remove("an"); gehalten.delete(t); if (t === "zurueck") gehalten.delete("pause"); };
+  k.addEventListener("pointerdown", an); k.addEventListener("pointerup", aus); k.addEventListener("pointercancel", aus); k.addEventListener("lostpointercapture", aus);
+}
+
+// Steuerstick: Richtung aus dem Winkel (8 Richtungen, schräg = zwei Tasten), kleine Bewegungen zählen nicht
+const stick = document.getElementById("stick"), knauf = document.getElementById("knauf");
+let stickId = null, stickRichtung = new Set();
+function stickStellen(dx, dy) {
+  const d = Math.hypot(dx, dy), k = d > 44 ? 44 / d : 1, neu = new Set();
+  knauf.style.transform = "translate(" + dx * k + "px," + dy * k + "px)";
+  if (d > 16) {
+    if (dx < -d * 0.38) neu.add("links"); if (dx > d * 0.38) neu.add("rechts");
+    if (dy < -d * 0.38) neu.add("hoch"); if (dy > d * 0.38) neu.add("runter");
+  }
+  for (const t of neu) if (!stickRichtung.has(t)) { gehalten.add(t); tipp.add(t); }
+  for (const t of stickRichtung) if (!neu.has(t)) gehalten.delete(t);
+  stickRichtung = neu; stick.classList.toggle("an", neu.size > 0);
+}
+const stickZiehen = (e) => { if (e.pointerId !== stickId) return; e.preventDefault(); const r = stick.getBoundingClientRect(); stickStellen(e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2); };
+const stickLos = (e) => { if (e.pointerId !== stickId) return; stickId = null; stickStellen(0, 0); };
+stick.addEventListener("pointerdown", (e) => { e.preventDefault(); stickId = e.pointerId; stick.setPointerCapture?.(e.pointerId); stickZiehen(e); });
+stick.addEventListener("pointermove", stickZiehen);
+stick.addEventListener("pointerup", stickLos); stick.addEventListener("pointercancel", stickLos); stick.addEventListener("lostpointercapture", stickLos);
+
+const leinwand = document.getElementById("bild"), ctx = leinwand.getContext("2d");
+let remaster = null;   // die Handy-Oberfläche, solange nicht Klassisch
+
+// Antippen im Remaster: Punkte in Bühnen-Koordinaten; überall außer auf den Tasten
+let tippsNeu = [], halten = null, haltId = null;
+const punkt = (e) => { const r = leinwand.getBoundingClientRect(); return { x: Math.floor((e.clientX - r.left) * leinwand.width / r.width), y: Math.floor((e.clientY - r.top) * leinwand.height / r.height) }; };
+addEventListener("pointerdown", (e) => {
+  if (klassisch || e.target.closest(".tasten, #leiste")) return;
+  e.preventDefault(); const p = punkt(e); tippsNeu.push(p); halten = p; haltId = e.pointerId;
+});
+addEventListener("pointermove", (e) => { if (e.pointerId === haltId && halten) halten = punkt(e); });
+const loslassen = (e) => { if (e.pointerId === haltId) { halten = null; haltId = null; } };
+addEventListener("pointerup", loslassen); addEventListener("pointercancel", loslassen);
+
+function groesse() {
+  const b = innerWidth, h = innerHeight;
+  const rs = getComputedStyle(document.getElementById("rand")), px = (n) => parseFloat(rs["padding" + n]) || 0;
+  const T = px("Top"), R = px("Right"), U = px("Bottom"), L = px("Left");
+  const fuss = Math.max(14, U) + 150 + 10;   // Stick/Knöpfe unten (150 px hoch) mit Abstand wie im CSS
+  const seiteFrei = Math.max(Math.max(14, L) + 150, Math.max(14, R) + 150) + 10;
+  let W, H, f, links, oben;
+  if (h > b) {
+    // hochkant: Bühne 240x360 (Remaster) bzw. 240x320 (Klassisch), unten Platz für Stick und Knöpfe,
+    // oben für Notch/Insel und in Klassisch für die Leiste (auch wenn die Tasten im Menü ausgeblendet sind, damit nichts springt)
+    W = 240; H = klassisch ? 320 : 360;
+    const kopf = T + (klassisch ? 44 : 6);
+    f = Math.min((b - L - R) / W, (h - kopf - fuss) / H);
+    links = Math.round((b - W * f) / 2); oben = kopf + Math.max(0, Math.round((h - kopf - fuss - H * f) / 2));
+  } else if (klassisch) {
+    // quer, Klassisch: das Handybild in der Mitte, Stick und Knöpfe links und rechts daneben
+    W = 240; H = 320;
+    f = Math.min((b - 2 * seiteFrei) / W, (h - T - U - 8) / H);
+    links = Math.round((b - W * f) / 2); oben = T + Math.round((h - T - U - H * f) / 2);
+  } else {
+    // quer, Remaster: eigene Anordnung über die ganze sichere Fläche; Bühne Bx320, so breit wie das Seitenverhältnis,
+    // aber mindestens so breit, dass Stick und Knöpfe unter den Seitentafeln neben dem Spielfeld Platz haben
+    H = 320;
+    const fb = b - L - R, fh = h - T - U, f0 = fh / H;
+    // (wird die Bühne dafür breiter als das Seitenverhältnis, schrumpft der Maßstab; daher W ≥ 240·fb/(fb − 2·seiteFrei))
+    const mindest = fb > 2 * seiteFrei ? Math.ceil(240 * fb / (fb - 2 * seiteFrei)) : 240 + 2 * Math.ceil(seiteFrei / f0);
+    W = 2 * Math.ceil(Math.max(Math.round(fb / f0), mindest, 240 + 2 * Math.ceil(seiteFrei / f0), 400) / 2);
+    f = Math.min(fb / W, fh / H);
+    links = L + Math.round((fb - W * f) / 2); oben = T + Math.round((fh - H * f) / 2);
+  }
+  if (remaster) { remaster.anpassen(W, H); }
+  if (leinwand.width !== W || leinwand.height !== H) { leinwand.width = W; leinwand.height = H; }
+  leinwand.style.width = Math.round(W * f) + "px"; leinwand.style.height = Math.round(H * f) + "px";
+  leinwand.style.left = links + "px"; leinwand.style.top = oben + "px";
+}
+addEventListener("resize", groesse);
+addEventListener("orientationchange", () => setTimeout(groesse, 300));
+
+// Pixel (0xAARRGGBB) ins Canvas; ein Bildpuffer je Größe, geschrieben als 32-Bit-Wörter (RGBA im Speicher, Little Endian)
+let bildDaten = null, bild32 = null, bildW = 0, bildH = 0;
+function zeigen(px, W, H) {
+  if (!bildDaten || bildW !== W || bildH !== H) { bildDaten = ctx.createImageData(W, H); bild32 = new Uint32Array(bildDaten.data.buffer); bildW = W; bildH = H; }
+  for (let i = 0; i < px.length; i++) { const p = px[i]; bild32[i] = (0xFF000000 | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >>> 16) & 0xFF)) >>> 0; }
+  ctx.putImageData(bildDaten, 0, 0);
+}
+
+(async () => {
+  const dateien = {};
+  for (const [n, d] of Object.entries(DATEIEN)) dateien[n] = n.endsWith(".png") ? roh(d) : d;
+  await BR.laden(dateien, inflate);
+  document.getElementById("laden").remove();
+  let schritt;
+  if (klassisch) {
+    // wie Gemeinsam\Fenster.cs HandyAnzeige: je Taste ein keyPressed beim Drücken, ein keyReleased beim Loslassen
+    BR.Tb.w = 240; BR.Tb.h = 320;
+    const schirm = BR.Image.createImage(240, 320), CODE = { hoch: -1, runter: -2, links: -3, rechts: -4, ok: -5, zurueck: 51 };
+    let vorher = new Set();
+    schritt = () => {
+      const jetzt = new Set([...handy, ...handyTipp]);
+      for (const t of [...gehalten, ...tipp]) if (CODE[t] !== undefined) jetzt.add(CODE[t]);
+      tipp.clear(); handyTipp.clear();
+      for (const c of vorher) if (!jetzt.has(c)) BR.Ac.keyReleased(c);
+      for (const c of jetzt) if (!vorher.has(c)) BR.Ac.keyPressed(c);
+      vorher = jetzt;
+      try { BR.Ac.paint(schirm.getGraphics()); } catch (e) { }
+      if (BR.Ac.beendet) { BR.Ac.beendet = false; location.hash = ""; location.reload(); }   // „Verlassen“: zurück ins Remaster
+      zeigen(schirm.Pixel, 240, 320);
+    };
+  } else {
+    BR.Ac.remaster = true;
+    document.body.classList.add("remaster");
+    const r = remaster = new BRHandy({ klassisch: () => { location.hash = "#klassisch"; location.reload(); }, seite: () => seite, seiteSetzen });
+    schritt = () => {
+      r.schritt(new Set([...gehalten, ...tipp]), tippsNeu, halten); tipp.clear(); tippsNeu = [];
+      document.body.classList.toggle("spielt", r.schirm === "Spiel");
+      zeigen(r.buehne.Pixel, r.B, r.H);
+    };
+  }
+  groesse();
+  // Klassisch 25 Bilder/s wie das Handyspiel, das Remaster 60 Bilder/s (die Logik darin weiter 25 Schritte/s), auch wenn
+  // der Bildschirm schneller ist; 1 ms Spielraum, damit ein 60-Hz-Bildschirm nicht wegen Zeitschwankungen ein Bild auslässt
+  const MS = klassisch ? 40 : 1000 / 60;
+  let zeit = performance.now();
+  (function takt(jetzt) {
+    let n = 0;
+    while (jetzt - zeit >= MS - 1 && n < 5) { schritt(); zeit += MS; n++; }
+    if (jetzt - zeit > 200) zeit = jetzt;
+    requestAnimationFrame(takt);
+  })(zeit);
+})();
+</script>
+</body>
+</html>
